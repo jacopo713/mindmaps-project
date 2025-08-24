@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    environment:
+      - PYTHONPATH=/app
+    working_dir: /app
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    working_dir: /app
+    command: npm run dev
+    depends_on:
+      - backend
+
+  mobile:
+    build: ./mobile
+    ports:
+      - "19006:19006"  # Expo web port
+      - "8081:8081"    # Metro bundler port
+    volumes:
+      - ./mobile:/app
+      - /app/node_modules
+    environment:
+      - EXPO_PUBLIC_API_URL=http://localhost:8000
+    working_dir: /app
+    command: npm run web
+    depends_on:
+      - backend
+
+volumes:
+  node_modules_frontend:
+  node_modules_mobile:
