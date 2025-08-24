@@ -38,7 +38,8 @@ export default function ChatbotPage() {
     try {
       abortControllerRef.current = new AbortController()
       
-      const response = await fetch('/api/chat', {
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'
+      const response = await fetch(`${backendUrl}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
