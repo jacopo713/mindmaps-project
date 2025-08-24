@@ -62,4 +62,4 @@ npm start
 
 Vedi README specifici in ogni cartella:
 - [Frontend README](./frontend/README.md)
-- [Mobile README](./mobile/README.md)
+- [Mobile README](./mobile/README.md)# Trigger Railway deploy with DeepSeek API key
