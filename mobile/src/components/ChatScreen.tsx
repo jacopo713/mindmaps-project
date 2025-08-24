@@ -71,6 +71,7 @@ export default function ChatScreen({ currentChat, onChatUpdate }: ChatScreenProp
       await ChatAPI.sendMessage(
         [...messages, userMessage],
         (chunk: string) => {
+          console.log('Received chunk in ChatScreen:', chunk);
           setMessages(prev =>
             prev.map(msg =>
               msg.id === assistantMessage.id
