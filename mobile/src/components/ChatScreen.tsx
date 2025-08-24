@@ -13,6 +13,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Message, Chat } from '../types';
 import { ChatAPI } from '../utils/api';
+import { ChatAPIXHR } from '../utils/api-xhr';
 import { StorageManager } from '../utils/storage';
 
 interface ChatScreenProps {
@@ -68,7 +69,7 @@ export default function ChatScreen({ currentChat, onChatUpdate }: ChatScreenProp
     try {
       abortControllerRef.current = new AbortController();
       
-      await ChatAPI.sendMessage(
+      await ChatAPIXHR.sendMessage(
         [...messages, userMessage],
         (chunk: string) => {
           console.log('Received chunk in ChatScreen:', chunk);
