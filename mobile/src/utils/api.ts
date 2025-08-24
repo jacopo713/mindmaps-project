@@ -20,13 +20,57 @@ export class ChatAPI {
       }
 
       console.log('Response received, starting stream processing');
-      const reader = response.body?.getReader();
+      
+      // Check if ReadableStream is supported
+      if (!response.body || !response.body.getReader) {
+        console.error('ReadableStream not supported, falling back to text');
+        const text = await response.text();
+        console.log('Full response text:', text);
+        
+        // Process the full text as if it were streamed
+        const lines = text.split('\n');
+        for (const line of lines) {
+          if (line.trim() && line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') {
+              onComplete();
+              return;
+            }
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.content) {
+                onChunk(parsed.content);
+              }
+            } catch (e) {
+              console.error('Failed to parse JSON:', data, e);
+            }
+          }
+        }
+        onComplete();
+        return;
+      }
+
+      const reader = response.body.getReader();
       const decoder = new TextDecoder();
 
-      if (reader) {
+      console.log('Starting ReadableStream processing');
+      
+      try {
         let buffer = '';
         while (true) {
-          const { done, value } = await reader.read();
+          console.log('Calling reader.read()...');
+          
+          // Add timeout to detect stuck reader
+          const readPromise = reader.read();
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Reader timeout')), 5000)
+          );
+          
+          const result = await Promise.race([readPromise, timeoutPromise]);
+          const { done, value } = result as { done: boolean; value?: Uint8Array };
+          
+          console.log('reader.read() returned:', { done, valueLength: value?.length });
+          
           if (done) {
             console.log('Stream done');
             break;
@@ -73,6 +117,9 @@ export class ChatAPI {
             onComplete();
           }
         }
+      } catch (readerError) {
+        console.error('ReadableStream reader error:', readerError);
+        throw readerError;
       }
     } catch (error) {
       console.error('fetchStream error:', error);
