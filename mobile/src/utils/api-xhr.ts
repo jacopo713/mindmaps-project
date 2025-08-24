@@ -28,31 +28,25 @@ export class ChatAPIXHR {
         lastIndex = responseText.length;
 
         if (newData) {
-          console.log('XHR received new data:', newData);
-          
           // Split by lines and process each line
           const lines = newData.split('\n');
           
           for (const line of lines) {
             if (line.trim() && line.startsWith('data: ')) {
               const data = line.slice(6);
-              console.log('XHR processing data:', data);
               
               if (data === '[DONE]') {
-                console.log('XHR stream completed');
                 onComplete();
                 return;
               }
 
               try {
                 const parsed = JSON.parse(data);
-                console.log('XHR parsed JSON:', parsed);
                 if (parsed.content) {
-                  console.log('XHR calling onChunk with:', parsed.content);
                   onChunk(parsed.content);
                 }
               } catch (e) {
-                console.error('XHR failed to parse JSON:', data, e);
+                console.error('Failed to parse JSON:', data, e);
               }
             }
           }
@@ -62,16 +56,13 @@ export class ChatAPIXHR {
 
     xhr.onload = () => {
       if (xhr.status === 200) {
-        console.log('XHR completed successfully');
         onComplete();
       } else {
-        console.error('XHR error:', xhr.status, xhr.statusText);
         onError(new Error(`HTTP ${xhr.status}: ${xhr.statusText}`));
       }
     };
 
     xhr.onerror = () => {
-      console.error('XHR network error');
       onError(new Error('Network error'));
     };
 
@@ -82,7 +73,6 @@ export class ChatAPIXHR {
       });
     }
 
-    console.log('XHR sending request to:', url);
     xhr.send(options.body);
   }
 
