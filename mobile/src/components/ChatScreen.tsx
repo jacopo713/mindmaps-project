@@ -88,9 +88,13 @@ export default function ChatScreen({ currentChat, onChatUpdate }: ChatScreenProp
                 ? { ...msg, isStreaming: false }
                 : msg
             );
-            // Save to storage
-            StorageManager.updateChat(currentChat.id, finalMessages);
-            onChatUpdate({ ...currentChat, messages: finalMessages });
+            
+            // Use setTimeout to avoid setState during render
+            setTimeout(() => {
+              StorageManager.updateChat(currentChat.id, finalMessages);
+              onChatUpdate({ ...currentChat, messages: finalMessages });
+            }, 0);
+            
             return finalMessages;
           });
         },
