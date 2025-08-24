@@ -69,7 +69,7 @@ export default function ChatScreen({ currentChat, onChatUpdate }: ChatScreenProp
     try {
       abortControllerRef.current = new AbortController();
       
-      await ChatAPIXHR.sendMessage(
+      await ChatAPI.sendMessage(
         [...messages, userMessage],
         (chunk: string) => {
           console.log('Received chunk in ChatScreen:', chunk);
