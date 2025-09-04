@@ -771,6 +771,7 @@ export default function MindMapPage() {
   const [aiMessages, setAiMessages] = useState<AiMessage[]>([]);
   const [aiInput, setAiInput] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
+  const [aiPlanMode, setAiPlanMode] = useState(false);
   const aiAbortRef = useRef<AbortController | null>(null);
 
   // Plan/Apply state
@@ -808,6 +809,7 @@ export default function MindMapPage() {
       const initialSel: Record<number, boolean> = {};
       (Array.isArray(data?.operations) ? data.operations : []).forEach((_: any, i: number) => { initialSel[i] = true; });
       setPlanSelected(initialSel);
+      setAiInput('');
     } catch (e) {
       alert('Errore nella generazione del piano');
     }
@@ -877,6 +879,7 @@ export default function MindMapPage() {
 
       const reader = res.body?.getReader();
       const decoder = new TextDecoder();
+      let collected = '';
       if (reader) {
         while (true) {
           const { done, value } = await reader.read();
@@ -893,12 +896,30 @@ export default function MindMapPage() {
             try {
               const parsed = JSON.parse(data);
               if (parsed.content) {
+                collected += parsed.content;
                 setAiMessages(prev => prev.map(m => m.id === assistantMsg.id ? { ...m, content: m.content + parsed.content } : m));
               }
             } catch {}
           }
         }
       }
+      // Try parse a JSON plan from the final assistant text
+      try {
+        const start = collected.indexOf('{');
+        const end = collected.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+          const maybe = collected.slice(start, end + 1);
+          const data = JSON.parse(maybe);
+          if (Array.isArray(data?.operations)) {
+            setPlanSummary(String(data?.summary || 'Piano proposto'));
+            setPlanBaseVersion(Number(data?.baseVersion || Date.now()));
+            setPlanOps(data.operations as any);
+            const initSel: Record<number, boolean> = {};
+            (data.operations as any[]).forEach((_: any, i: number) => { initSel[i] = true; });
+            setPlanSelected(initSel);
+          }
+        }
+      } catch {}
     } catch (e) {
       setAiMessages(prev => prev.map(m => m.isStreaming ? { ...m, content: 'Errore di rete', isStreaming: false } : m));
     } finally {
@@ -1705,8 +1726,12 @@ export default function MindMapPage() {
               className="w-full resize-none bg-[#f3f4f6] focus:outline-none border-none pr-12 text-sm"
               rows={2}
             />
+            <label className="absolute left-2 bottom-2 flex items-center gap-1 text-[11px] text-gray-600 select-none">
+              <input type="checkbox" checked={aiPlanMode} onChange={(e) => setAiPlanMode(e.target.checked)} />
+              Pianifica modifiche
+            </label>
             <button
-              onClick={sendAiMessage}
+              onClick={aiPlanMode ? requestPlan : sendAiMessage}
               disabled={!aiInput.trim() || aiLoading}
               className={`absolute bottom-2 right-2 w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 ${aiInput.trim() && !aiLoading ? 'bg-[#007AFF] hover:bg-[#0056CC] cursor-pointer' : 'bg-[#CCCCCC] cursor-not-allowed'}`}
               title={aiLoading ? 'Invio in corso…' : 'Invia messaggio'}
