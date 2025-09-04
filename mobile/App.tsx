@@ -2,10 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { View, StyleSheet, Dimensions, TouchableOpacity, Text, Modal } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Chat } from './src/types';
 import { StorageManager } from './src/utils/storage';
 import ChatScreen from './src/components/ChatScreen';
 import Sidebar from './src/components/Sidebar';
+import MindMapPlaceholder from './src/components/MindMapPlaceholder';
 
 const { width } = Dimensions.get('window');
 const SIDEBAR_WIDTH = 280;
@@ -15,6 +17,7 @@ export default function App() {
   const [chats, setChats] = useState<Chat[]>([]);
   const [currentChat, setCurrentChat] = useState<Chat | null>(null);
   const [sidebarVisible, setSidebarVisible] = useState(!IS_MOBILE);
+  const [currentScreen, setCurrentScreen] = useState<'chat' | 'mindmap'>('chat');
 
   useEffect(() => {
     initializeApp();
@@ -36,6 +39,10 @@ export default function App() {
   };
 
   const handleNewChat = async () => {
+    // Se la chat corrente è già vuota, non creare una nuova chat
+    if (currentChat && currentChat.messages.length === 0) {
+      return;
+    }
     const newChat = await StorageManager.createChat();
     setChats(prev => [newChat, ...prev]);
     setCurrentChat(newChat);
@@ -72,17 +79,42 @@ export default function App() {
     }
   };
 
+  const handleNewMap = () => {
+    setCurrentScreen('mindmap');
+    if (IS_MOBILE) {
+      setSidebarVisible(false);
+    }
+  };
+
+  const handleBackToChat = () => {
+    setCurrentScreen('chat');
+  };
+
   return (
-    <SafeAreaProvider>
-      <StatusBar style="auto" />
-      <View style={styles.container}>
-        {/* Mobile Hamburger Menu */}
-        {IS_MOBILE && (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <StatusBar style="auto" />
+        <View style={styles.container}>
+        {/* Mobile Hamburger Menu - Hide in mindmap mode */}
+        {IS_MOBILE && currentScreen === 'chat' && (
           <View style={styles.mobileHeader}>
-            <TouchableOpacity style={styles.hamburgerButton} onPress={toggleSidebar}>
+            <TouchableOpacity 
+              style={styles.hamburgerButton} 
+              onPress={toggleSidebar}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              activeOpacity={0.7}
+            >
               <Text style={styles.hamburgerText}>☰</Text>
             </TouchableOpacity>
-            <Text style={styles.headerTitle}>Tree</Text>
+            {currentScreen === 'chat' && <Text style={styles.headerTitle}>Nuova chat</Text>}
+            <TouchableOpacity 
+              style={styles.newChatButton} 
+              onPress={handleNewMap}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.newChatText}>🗺️</Text>
+            </TouchableOpacity>
           </View>
         )}
 
@@ -96,16 +128,21 @@ export default function App() {
                 onChatSelect={handleChatSelect}
                 onNewChat={handleNewChat}
                 onChatsUpdate={handleChatsUpdate}
+                onNewMap={handleNewMap}
               />
             </View>
           )}
 
-          {/* Main Chat Area */}
+          {/* Main Content Area */}
           <View style={styles.chatArea}>
-            <ChatScreen
-              currentChat={currentChat}
-              onChatUpdate={handleChatUpdate}
-            />
+            {currentScreen === 'chat' ? (
+              <ChatScreen
+                currentChat={currentChat}
+                onChatUpdate={handleChatUpdate}
+              />
+            ) : (
+              <MindMapPlaceholder onBackToChat={handleBackToChat} />
+            )}
           </View>
         </View>
 
@@ -113,7 +150,7 @@ export default function App() {
         {IS_MOBILE && (
           <Modal
             visible={sidebarVisible}
-            animationType="slide"
+            animationType="none"
             transparent={true}
             onRequestClose={() => setSidebarVisible(false)}
           >
@@ -125,6 +162,7 @@ export default function App() {
                   onChatSelect={handleChatSelect}
                   onNewChat={handleNewChat}
                   onChatsUpdate={handleChatsUpdate}
+                  onNewMap={handleNewMap}
                 />
               </View>
               <TouchableOpacity 
@@ -136,6 +174,7 @@ export default function App() {
         )}
       </View>
     </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 
@@ -145,29 +184,49 @@ const styles = StyleSheet.create({
     backgroundColor: '#ffffff',
   },
   mobileHeader: {
-    height: 60,
+    height: 70,
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-end',
     paddingHorizontal: 16,
-    backgroundColor: '#f9fbff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e5e7eb',
+    paddingBottom: 8,
+    backgroundColor: '#ffffff',
+    position: 'relative',
   },
   hamburgerButton: {
     width: 40,
-    height: 40,
+    height: 32,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 16,
+    position: 'absolute',
+    left: 16,
+    zIndex: 10,
   },
   hamburgerText: {
     fontSize: 20,
     color: '#374151',
   },
   headerTitle: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: '#000',
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#374151',
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    textAlign: 'center',
+  },
+  newChatButton: {
+    width: 40,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'absolute',
+    right: 16,
+    zIndex: 10,
+  },
+  newChatText: {
+    fontSize: 24,
+    fontWeight: '300',
+    color: '#007AFF',
   },
   mainContent: {
     flex: 1,

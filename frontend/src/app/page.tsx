@@ -1,86 +1,65 @@
-import Image from "next/image";
 import Link from "next/link";
 
 export default function Home() {
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <h1 className="text-3xl font-bold text-center sm:text-left">
-          Mindmaps Project
-        </h1>
-        
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <Link
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-blue-600 text-white gap-2 hover:bg-blue-700 font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="/chatbot"
-          >
-            Apri Chatbot
-          </Link>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentazione
-          </a>
+    <div className="min-h-screen bg-white text-slate-800">
+      {/* Hero */}
+      <section className="max-w-6xl mx-auto px-4 py-16">
+        <div className="grid md:grid-cols-2 gap-8 items-center">
+          <div>
+            <h1 className="text-3xl md:text-4xl font-bold leading-tight mb-3">
+              Brainstorming e mappe concettuali, insieme alla tua chat AI
+            </h1>
+            <p className="text-slate-600 mb-6">
+              Crea mappe concettuali con collegamenti logici, genera idee, e aggiungi tutto
+              al contesto della chat per conversazioni più informate e operative.
+            </p>
+            <div className="flex gap-3">
+              <Link href="/chatbot" className="px-4 py-2 rounded bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium">Apri Chat</Link>
+              <Link href="/mindmap" className="px-4 py-2 rounded bg-slate-900 hover:bg-black text-white text-sm font-medium">Apri Mappa</Link>
+            </div>
+          </div>
+          <div className="border border-dashed border-gray-300 rounded-xl h-56 md:h-64 flex items-center justify-center text-slate-400">
+            Anteprima semplice della mappa/ chat
+          </div>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+      </section>
+
+      {/* Features */}
+      <section className="max-w-6xl mx-auto px-4 pb-16 grid md:grid-cols-3 gap-6">
+        <div className="border border-gray-200 rounded-lg p-4">
+          <h3 className="font-semibold mb-1">Mappe concettuali con relazioni</h3>
+          <p className="text-sm text-slate-600">
+            Collega idee con relazioni causali e non-causali, con icone e colori dedicati.
+          </p>
+        </div>
+        <div className="border border-gray-200 rounded-lg p-4">
+          <h3 className="font-semibold mb-1">Agenti per nodi iniziali</h3>
+          <p className="text-sm text-slate-600">
+            Definisci prompt/regole per un agente associato al nodo radice e ai suoi correlati.
+          </p>
+        </div>
+        <div className="border border-gray-200 rounded-lg p-4">
+          <h3 className="font-semibold mb-1">Idee da brainstorming sempre nel contesto</h3>
+          <p className="text-sm text-slate-600">
+            Aggiungi le tue note/idee ai nodi per arricchire il contesto della chat in modo continuo.
+          </p>
+        </div>
+      </section>
+
+      {/* CTA bottom */}
+      <section className="max-w-6xl mx-auto px-4 pb-20">
+        <div className="flex flex-col md:flex-row items-center justify-between gap-4 border border-gray-200 rounded-xl p-4">
+          <div>
+            <h4 className="font-semibold">Inizia ora</h4>
+            <p className="text-sm text-slate-600">Crea una mappa o apri la chat e collega subito le tue idee.</p>
+          </div>
+          <div className="flex gap-3">
+            <Link href="/mindmap" className="px-4 py-2 rounded bg-slate-900 hover:bg-black text-white text-sm font-medium">Nuova Mappa</Link>
+            <Link href="/chatbot" className="px-4 py-2 rounded bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium">Apri Chat</Link>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
