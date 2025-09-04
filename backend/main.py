@@ -111,10 +111,10 @@ async def suggest_node_titles(req: SuggestTitlesRequest):
         raise HTTPException(status_code=500, detail="API key not configured")
 
     system_prompt = (
-        "Sei un assistente che suggerisce titoli per nodi di mappe concettuali. "
-        "Rispondi SOLO con una lista JSON di 3 stringhe. Regole: "
-        "1) Ogni titolo deve essere breve (3-6 parole), 2) evitare gergo, 3) essere specifico, "
-        "4) niente punteggiatura superflua, 5) formati neutri e azionabili."
+        "Sei un assistente che suggerisce alternative di titolo per nodi di mappe concettuali, in italiano. "
+        "Rispondi SOLO con un array JSON di 3 stringhe. Regole: "
+        "1) Ogni titolo 2-6 parole, 2) niente numerazione o virgolette, 3) niente punteggiatura finale, "
+        "4) coerenti con titolo originale e contesto, 5) vari tra loro, 6) chiari e specifici."
     )
 
     user_hint = req.hint or ""
@@ -131,8 +131,9 @@ async def suggest_node_titles(req: SuggestTitlesRequest):
             {
                 "role": "user",
                 "content": (
+                    f"Titolo originale: {user_hint}\n" +
                     "Contesto (facoltativo) in JSON:\n" + context_snippet +
-                    "\n\nSuggerisci 3 possibili titoli coerenti. Rispondi SOLO con un array JSON di 3 stringhe."
+                    "\n\nGenera 3 alternative brevi e diverse. Rispondi SOLO con un array JSON di 3 stringhe."
                 )
             },
         ]

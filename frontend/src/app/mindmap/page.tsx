@@ -120,6 +120,7 @@ export default function MindMapPage() {
   const [connectionDragPosition, setConnectionDragPosition] = useState<{ x: number; y: number } | null>(null);
   const [connectionDragStartNode, setConnectionDragStartNode] = useState<{ id: string; x: number; y: number } | null>(null);
   const [expandingNodeId, setExpandingNodeId] = useState<string | null>(null);
+  const [titleSuggestions, setTitleSuggestions] = useState<{ nodeId: string; options: string[] } | null>(null);
   
   // Base node dimensions (will be calculated dynamically per node)
   const { width: baseNodeWidth, height: baseNodeHeight } = getDefaultNodeSize();
@@ -1206,65 +1207,18 @@ export default function MindMapPage() {
                   nodes: nodes.map(n => ({ id: n.id, title: n.title })),
                   connections: connections.map(c => ({ sourceId: c.sourceId, targetId: c.targetId })),
                 } as any;
-                const applyChildren = (children: Array<{ title: string }>) => {
-                  if (!children || children.length === 0) return;
-                  const base = nodes.find(n => n.id === id);
-                  if (!base) return;
-                  const angleStep = (Math.PI * 2) / children.length;
-                  const radius = 200;
-                  const now = Date.now();
-                  const newNodes = children.map((c, idx) => ({
-                    id: `${now + idx}`,
-                    title: c.title,
-                    x: base.x + Math.cos(idx * angleStep) * radius,
-                    y: base.y + Math.sin(idx * angleStep) * radius,
-                    borderColor: '#4f46e5'
-                  } as any));
-                  const newConnections = newNodes.map(nc => ({
-                    id: `conn-${id}-${nc.id}`,
-                    sourceId: id,
-                    targetId: nc.id,
-                    type: 'curved',
-                    adaptiveCurvature: true,
-                    curvatureDirection: 'auto',
-                    color: '#6b7280',
-                    width: 2,
-                    showArrow: true,
-                    arrowPosition: 'end',
-                    relation: 'generico'
-                  } as any));
-                  historyRef.current.push({
-                    nodes: JSON.parse(JSON.stringify(nodes)),
-                    connections: JSON.parse(JSON.stringify(connections))
-                  });
-                  setHistoryCount(historyRef.current.length);
-                  setNodes(prev => [...prev, ...newNodes]);
-                  setConnections(prev => [...prev, ...newConnections]);
-                  setIsDirty(true);
-                };
-                const applyFallback = () => {
-                  const baseTitle = (nodes.find(n => n.id === id)?.title || 'Idea').replace(/\.$/, '');
-                  applyChildren([
-                    { title: `${baseTitle}: Definizione` },
-                    { title: `${baseTitle}: Esempi` },
-                    { title: `${baseTitle}: Azioni` },
-                  ]);
-                };
-                fetch(`${backendUrl}/api/expand_node`, {
+                fetch(`${backendUrl}/api/suggest_node_titles`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ node_id: id, node_title: node.title, context: ctx })
+                  body: JSON.stringify({ context: ctx, hint: node.title })
                 })
                   .then(r => r.json())
                   .then((data) => {
-                    const children: Array<{ title: string }> = Array.isArray(data?.children) ? data.children : [];
-                    if (children.length === 0) {
-                      applyFallback();
-                    } else {
-                      applyChildren(children);
-                    }
+                    const options: string[] = Array.isArray(data?.suggestions) ? data.suggestions : [];
+                    if (!options || options.length === 0) return;
+                    setTitleSuggestions({ nodeId: id, options });
                   })
-                  .catch(() => applyFallback())
+                  .catch(() => {})
                   .finally(() => setExpandingNodeId(null));
               }}
               style={activeTool === 'eraser' ? { cursor: 'url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTIwIDIwSDdsLTctNyA5LjUtOS41YTMuNTQgMy41NCAwIDAgMSA1IDBsNCA0YTMuNTQgMy41NCAwIDAgMSAwIDVMMTMgMTguNSIgc3Ryb2tlPSIjZWY0NDQ0IiBzdHJva2Utd2lkdGg9IjIiIGZpbGw9IiNmZWY5ZjkiLz4KPHN2Zz4K") 12 12, auto' } : undefined}
@@ -1303,31 +1257,31 @@ export default function MindMapPage() {
 
       {/* Save/Undo controls */}
       <div className="absolute top-4 right-4 z-20 pointer-events-auto flex gap-2">
-        {/* Suggestions chooser for nodes with __suggestions */}
-        {nodes.some((n: any) => Array.isArray((n as any).__suggestions) && (n as any).__suggestions.length > 0) && (
+        {/* Title suggestions chooser */}
+        {titleSuggestions && (
           <div className="bg-white/90 backdrop-blur rounded-lg shadow-lg border border-gray-200 px-3 py-2">
-            <div className="text-xs text-gray-500 mb-1">Suggerimenti per nodo</div>
-            {nodes.filter((n: any) => Array.isArray(n.__suggestions) && n.__suggestions.length > 0).slice(0,1).map((n: any) => (
-              <div key={n.id} className="flex items-center gap-2">
-                {n.__suggestions.slice(0,3).map((s: string, idx: number) => (
-                  <button
-                    key={idx}
-                    className="px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded text-xs border border-blue-200"
-                    onClick={() => {
-                      // Apply selection to node title and clear suggestions
-                      setNodes(prev => prev.map(nn => nn.id === n.id ? { ...(nn as any), title: s, __suggestions: undefined } : nn));
-                      setIsDirty(true);
-                    }}
-                  >{s}</button>
-                ))}
+            <div className="text-xs text-gray-500 mb-1">Sostituisci titolo nodo</div>
+            <div className="flex items-center gap-2">
+              {titleSuggestions.options.slice(0,3).map((s, idx) => (
                 <button
-                  className="px-2 py-1 bg-gray-50 hover:bg-gray-100 text-gray-700 rounded text-xs border border-gray-200"
-                  onClick={() => setNodes(prev => prev.map(nn => nn.id === n.id ? { ...(nn as any), __suggestions: undefined } : nn))}
-                >Chiudi</button>
-              </div>
-            ))}
+                  key={idx}
+                  className="px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded text-xs border border-blue-200"
+                  onClick={() => {
+                    const nodeId = titleSuggestions.nodeId;
+                    setNodes(prev => prev.map(n => n.id === nodeId ? { ...n, title: s } : n));
+                    setIsDirty(true);
+                    setTitleSuggestions(null);
+                  }}
+                >{s}</button>
+              ))}
+              <button
+                className="px-2 py-1 bg-gray-50 hover:bg-gray-100 text-gray-700 rounded text-xs border border-gray-200"
+                onClick={() => setTitleSuggestions(null)}
+              >Chiudi</button>
+            </div>
           </div>
         )}
+        {/* Deprecated node __suggestions panel removed */}
         <button
           onClick={() => {
             if (historyRef.current.length === 0) return;
