@@ -111,6 +111,7 @@ export default function MindMapPage() {
   
   // Connection selection state
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   
   // Prevent selection after connection creation
   const [preventNextSelection, setPreventNextSelection] = useState<boolean>(false);
@@ -626,7 +627,7 @@ export default function MindMapPage() {
       setPreventNextSelection(false);
       return;
     }
-    // In the future, if we add node selection state, we would handle it here
+    setSelectedNodeId(prev => (prev === nodeId ? null : nodeId));
   }, [preventNextSelection]);
   
   
@@ -764,6 +765,172 @@ export default function MindMapPage() {
   // Toolbar state (moved up to avoid reference errors)
   const [activeTool, setActiveTool] = useState<ToolType>('select');
   const [isRelationMenuOpen, setIsRelationMenuOpen] = useState<boolean>(false);
+
+  // AI Sidebar state
+  type AiMessage = { id: string; role: 'user' | 'assistant'; content: string; isStreaming?: boolean };
+  const [aiMessages, setAiMessages] = useState<AiMessage[]>([]);
+  const [aiInput, setAiInput] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const aiAbortRef = useRef<AbortController | null>(null);
+
+  // Plan/Apply state
+  type PlanOperation = {
+    op: 'rename_node' | 'create_node' | 'delete_node' | 'move_node' | 'connect_nodes' | 'disconnect_nodes' | 'recolor_node';
+    nodeId?: string; title?: string; x?: number; y?: number; dx?: number; dy?: number; sourceId?: string; targetId?: string; relation?: string; color?: string; borderColor?: string;
+  };
+  const [planSummary, setPlanSummary] = useState<string>('');
+  const [planBaseVersion, setPlanBaseVersion] = useState<number>(0);
+  const [planOps, setPlanOps] = useState<PlanOperation[]>([]);
+  const [planSelected, setPlanSelected] = useState<Record<number, boolean>>({});
+
+  const requestPlan = useCallback(async () => {
+    const instruction = aiInput.trim() || window.prompt('Descrivi cosa vuoi modificare nella mappa:') || '';
+    if (!instruction) return;
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+    try {
+      const body = {
+        instruction,
+        selectedNodeId: selectedNodeId,
+        map: {
+          id: currentMindMapId,
+          title: 'Mind Map',
+          nodes: nodes,
+          connections: connections,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        }
+      };
+      const r = await fetch(`${backendUrl}/api/agent/plan`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const data = await r.json();
+      setPlanSummary(data?.summary || '');
+      setPlanBaseVersion(data?.baseVersion || 0);
+      setPlanOps(Array.isArray(data?.operations) ? data.operations : []);
+      const initialSel: Record<number, boolean> = {};
+      (Array.isArray(data?.operations) ? data.operations : []).forEach((_: any, i: number) => { initialSel[i] = true; });
+      setPlanSelected(initialSel);
+    } catch (e) {
+      alert('Errore nella generazione del piano');
+    }
+  }, [aiInput, selectedNodeId, currentMindMapId, nodes, connections]);
+
+  const applySelectedOps = useCallback(async () => {
+    const selectedOps = planOps.filter((_, i) => planSelected[i]);
+    if (selectedOps.length === 0) { alert('Seleziona almeno un’operazione.'); return; }
+    if (!window.confirm(`Confermi l'applicazione di ${selectedOps.length} operazione/i?`)) return;
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+    try {
+      const body = {
+        baseVersion: planBaseVersion || Date.now(),
+        map: {
+          id: currentMindMapId,
+          title: 'Mind Map',
+          nodes,
+          connections,
+          createdAt: Date.now(),
+          updatedAt: planBaseVersion || Date.now(),
+        },
+        operations: selectedOps,
+      };
+      const r = await fetch(`${backendUrl}/api/mindmaps/apply`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (r.status === 409) { alert('La mappa è cambiata. Rigenera il piano.'); return; }
+      const data = await r.json();
+      const newMap = data?.map;
+      if (newMap) {
+        setNodes(newMap.nodes || nodes);
+        setConnections(newMap.connections || connections);
+        setIsDirty(true);
+        setPlanOps([]); setPlanSelected({}); setPlanSummary(''); setPlanBaseVersion(0);
+      }
+    } catch (e) {
+      alert('Errore durante l\'applicazione delle modifiche');
+    }
+  }, [planOps, planSelected, planBaseVersion, currentMindMapId, nodes, connections]);
+
+  const sendAiMessage = useCallback(async () => {
+    if (!aiInput.trim() || aiLoading) return;
+    const userMsg: AiMessage = { id: Date.now().toString(), role: 'user', content: aiInput.trim() };
+    const assistantMsg: AiMessage = { id: (Date.now() + 1).toString(), role: 'assistant', content: '', isStreaming: true };
+    setAiMessages(prev => [...prev, userMsg, assistantMsg]);
+    setAiInput('');
+    setAiLoading(true);
+
+    try {
+      aiAbortRef.current = new AbortController();
+
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+      const context = {
+        selectedNode: selectedNodeId ? nodes.find(n => n.id === selectedNodeId) : null,
+        nodes: nodes.map(n => ({ id: n.id, title: n.title })),
+        connections: connections.map(c => ({ sourceId: c.sourceId, targetId: c.targetId }))
+      };
+      const contextPrefix = `Contesto mappa (JSON)\n${JSON.stringify(context)}\n\n`;
+
+      const res = await fetch(`${backendUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [...aiMessages, { role: 'user', content: contextPrefix + userMsg.content }].map(({ id: _id, isStreaming: _s, ...m }) => m)
+        }),
+        signal: aiAbortRef.current.signal
+      });
+      if (!res.ok) throw new Error('Network response was not ok');
+
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n').filter(l => l.trim());
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const data = line.slice(6);
+            if (data === '[DONE]') {
+              setAiMessages(prev => prev.map(m => m.id === assistantMsg.id ? { ...m, isStreaming: false } : m));
+              break;
+            }
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.content) {
+                setAiMessages(prev => prev.map(m => m.id === assistantMsg.id ? { ...m, content: m.content + parsed.content } : m));
+              }
+            } catch {}
+          }
+        }
+      }
+    } catch (e) {
+      setAiMessages(prev => prev.map(m => m.isStreaming ? { ...m, content: 'Errore di rete', isStreaming: false } : m));
+    } finally {
+      setAiLoading(false);
+      aiAbortRef.current = null;
+    }
+  }, [aiInput, aiLoading, aiMessages, selectedNodeId, nodes, connections]);
+
+  const suggestTitles = useCallback(async () => {
+    const node = selectedNodeId ? nodes.find(n => n.id === selectedNodeId) : null;
+    if (!node) return alert('Seleziona prima un nodo.');
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+    try {
+      const r = await fetch(`${backendUrl}/api/suggest_node_titles`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hint: node.title, context: { nodes: nodes.map(n => ({ id: n.id, title: n.title })), connections: connections.map(c => ({ sourceId: c.sourceId, targetId: c.targetId })) } })
+      });
+      const data = await r.json();
+      const opts: string[] = Array.isArray(data?.suggestions) ? data.suggestions : [];
+      if (opts.length === 0) return alert('Nessun suggerimento.');
+      const choice = window.prompt(`Scegli un titolo (1-${Math.min(3, opts.length)}):\n` + opts.map((s: string, i: number) => `${i + 1}. ${s}`).join('\n'));
+      const idx = choice ? parseInt(choice, 10) - 1 : -1;
+      if (idx >= 0 && idx < opts.length) {
+        if (window.confirm('Confermi la modifica del titolo?')) {
+          const newTitle = opts[idx];
+          setNodes(prev => prev.map(n => n.id === node.id ? { ...n, title: newTitle } : n));
+          setIsDirty(true);
+        }
+      }
+    } catch {}
+  }, [selectedNodeId, nodes, connections]);
+
 
   // Style helpers for relation selector (colors + SVG icons)
   const getRelationColor = (relation: Connection['relation']): string => {
@@ -1471,6 +1638,91 @@ export default function MindMapPage() {
           </div>
         </div>
       )}
+
+      {/* Right AI Sidebar */}
+      <aside className="fixed right-0 top-0 h-full w-[360px] bg-[#f9fbff] border-l border-gray-200 z-30 pointer-events-auto hidden lg:flex flex-col">
+        <div className="p-4 border-b border-gray-200 flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-gray-700">Assistente AI</h2>
+          <div className="ml-auto text-xs text-gray-500">
+            {selectedNodeId ? `Nodo selezionato` : `Nessun nodo`}
+          </div>
+        </div>
+        <div className="p-3 flex items-center gap-2 border-b border-gray-200">
+          <button
+            onClick={suggestTitles}
+            className="px-2 py-1.5 bg-white border border-gray-300 rounded text-xs hover:bg-gray-50"
+            title="Suggerisci nuovi titoli per il nodo selezionato"
+          >Titoli</button>
+          <button
+            onClick={requestPlan}
+            className="px-2 py-1.5 bg-white border border-gray-300 rounded text-xs hover:bg-gray-50"
+            title="Genera piano AI di modifiche (con conferma)"
+          >Piano AI</button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          {aiMessages.length === 0 && (
+            <div className="text-xs text-gray-500">Suggerisci titoli, chiedi consigli o azioni sulla mappa. Il contesto include i nodi e quello selezionato.</div>
+          )}
+          {planOps.length > 0 && (
+            <div className="bg-white border border-gray-200 rounded-lg p-3 space-y-2">
+              <div className="text-sm font-medium text-gray-700">Piano proposto</div>
+              {planSummary && <div className="text-xs text-gray-600">{planSummary}</div>}
+              <div className="space-y-1 max-h-56 overflow-y-auto">
+                {planOps.map((op, idx) => (
+                  <label key={idx} className="flex items-start gap-2 text-xs text-gray-700">
+                    <input type="checkbox" checked={!!planSelected[idx]} onChange={(e) => setPlanSelected(prev => ({ ...prev, [idx]: e.target.checked }))} />
+                    <span className="break-all">
+                      {op.op}
+                      {op.nodeId ? ` nodeId=${op.nodeId}` : ''}
+                      {op.title ? ` title="${op.title}"` : ''}
+                      {op.sourceId ? ` source=${op.sourceId}` : ''}
+                      {op.targetId ? ` target=${op.targetId}` : ''}
+                      {typeof op.x === 'number' || typeof op.y === 'number' ? ` x=${op.x ?? ''} y=${op.y ?? ''}` : ''}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <div className="pt-2 flex items-center gap-2">
+                <button onClick={applySelectedOps} className="px-3 py-1.5 bg-blue-600 text-white rounded text-xs hover:bg-blue-700">Applica selezionate</button>
+                <button onClick={() => { setPlanOps([]); setPlanSelected({}); setPlanSummary(''); setPlanBaseVersion(0); }} className="px-3 py-1.5 bg-gray-100 text-gray-700 rounded text-xs border border-gray-300 hover:bg-gray-200">Scarta piano</button>
+              </div>
+            </div>
+          )}
+          {aiMessages.map(m => (
+            <div key={m.id} className={m.role === 'user' ? 'ml-auto max-w-[90%] bg-[#eff6ff] rounded-lg p-3 text-sm' : 'max-w-[90%] p-3 text-sm'}>
+              <div className={m.role === 'user' ? 'text-gray-800' : 'text-gray-700'}>{m.content}</div>
+              {m.isStreaming && <div className="flex items-center gap-1 mt-1"><span className="w-1 h-1 bg-gray-400 rounded-full animate-pulse"/><span className="w-1 h-1 bg-gray-400 rounded-full animate-pulse" style={{animationDelay:'0.2s'}}/><span className="w-1 h-1 bg-gray-400 rounded-full animate-pulse" style={{animationDelay:'0.4s'}}/></div>}
+            </div>
+          ))}
+        </div>
+        {/* Input container styled like chat */}
+        <div className="p-4 border-t border-gray-200">
+          <div className="bg-[#f3f4f6] rounded-xl p-3 relative">
+            <textarea
+              value={aiInput}
+              onChange={(e) => setAiInput(e.target.value)}
+              placeholder={selectedNodeId ? 'Chiedi in base al nodo selezionato…' : 'Scrivi qui (seleziona un nodo per più contesto)…'}
+              className="w-full resize-none bg-[#f3f4f6] focus:outline-none border-none pr-12 text-sm"
+              rows={2}
+            />
+            <button
+              onClick={sendAiMessage}
+              disabled={!aiInput.trim() || aiLoading}
+              className={`absolute bottom-2 right-2 w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 ${aiInput.trim() && !aiLoading ? 'bg-[#007AFF] hover:bg-[#0056CC] cursor-pointer' : 'bg-[#CCCCCC] cursor-not-allowed'}`}
+              title={aiLoading ? 'Invio in corso…' : 'Invia messaggio'}
+            >
+              {aiLoading ? (
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="text-white">
+                  <path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z" fill="currentColor" transform="rotate(-90 12 12)"/>
+                </svg>
+              )}
+            </button>
+          </div>
+          <div className="text-center text-gray-500 mt-2" style={{fontSize: '11px', lineHeight: '14px'}}>AI-generated, for reference only</div>
+        </div>
+      </aside>
     </div>
   );
 }

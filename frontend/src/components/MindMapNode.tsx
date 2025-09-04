@@ -65,6 +65,8 @@ export default function MindMapNode({
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(title);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0, nodeX: 0, nodeY: 0 });
+  const movedSinceMouseDownRef = useRef(false);
+  const isMouseDownRef = useRef(false);
   
   // Double click detection
   const [lastClickTime, setLastClickTime] = useState(0);
@@ -101,6 +103,14 @@ export default function MindMapNode({
       return;
     }
 
+    // If user dragged (beyond threshold), do not treat as selection click
+    if (movedSinceMouseDownRef.current) {
+      e.stopPropagation();
+      e.preventDefault();
+      movedSinceMouseDownRef.current = false;
+      return;
+    }
+
     // Check if this is an eraser tool click anywhere on the node
     if (style?.cursor?.includes('eraser')) {
       e.stopPropagation();
@@ -117,17 +127,7 @@ export default function MindMapNode({
       return;
     }
     
-    // If node is currently being dragged, stop dragging on click
-    if (isDragging) {
-      setIsDragging(false);
-      onDragStateChange?.(false);
-      // Cancel any pending drag timeout
-      if (dragTimeoutRef.current) {
-        clearTimeout(dragTimeoutRef.current);
-        dragTimeoutRef.current = null;
-      }
-      return;
-    }
+    // Do not toggle drag state here; mouseup handles end-of-drag.
     
     const currentTime = Date.now();
     const timeDiff = currentTime - lastClickTime;
@@ -221,7 +221,7 @@ export default function MindMapNode({
       dragTimeoutRef.current = null;
     }
     
-    // Add delay before starting drag to allow double click detection and selection
+    // Prepare potential drag; start only after small delay
     dragTimeoutRef.current = setTimeout(() => {
       if (clickCount < 2 && !isEditing && !isDragging) {
         // Only start drag if not already dragging
@@ -236,6 +236,10 @@ export default function MindMapNode({
       }
       dragTimeoutRef.current = null;
     }, isSelected ? 100 : 150); // Faster drag start if already selected
+
+    // Track mouse state for movement threshold evaluation
+    isMouseDownRef.current = true;
+    movedSinceMouseDownRef.current = false;
   }, [x, y, onDragStateChange, isEditing, clickCount, isClickInDeleteArea, isSelected, isDragging, preventNextSelection, onConsumePreventSelection, style, onConnectionDragStart, isInConnectionMode, nodeId]);
 
 
@@ -250,6 +254,12 @@ export default function MindMapNode({
     
     setIsDragging(false);
     onDragStateChange?.(false);
+    // Stop tracking potential drag and cancel pending drag start
+    isMouseDownRef.current = false;
+    if (dragTimeoutRef.current) {
+      clearTimeout(dragTimeoutRef.current);
+      dragTimeoutRef.current = null;
+    }
   }, [onDragStateChange, onConnectionDragEnd, isInConnectionMode, isConnectionSource, nodeId]);
 
   const handleGlobalMouseUp = useCallback(() => {
@@ -268,7 +278,18 @@ export default function MindMapNode({
     
     onLivePositionUpdate?.(newX, newY);
     onPositionChange(newX, newY);
+    movedSinceMouseDownRef.current = true;
   }, [isDragging, dragStart, onPositionChange, onLivePositionUpdate]);
+
+  // Local mouse move to detect slight movements before drag starts
+  const handleMouseMoveLocal = useCallback((e: React.MouseEvent) => {
+    if (!isMouseDownRef.current) return;
+    const deltaX = Math.abs(e.clientX - dragStart.x);
+    const deltaY = Math.abs(e.clientY - dragStart.y);
+    if (deltaX > 5 || deltaY > 5) {
+      movedSinceMouseDownRef.current = true;
+    }
+  }, [dragStart.x, dragStart.y]);
 
   // Edit mode handlers
   const handleEditConfirm = useCallback(() => {
@@ -338,9 +359,11 @@ export default function MindMapNode({
   const textOptions = getTextDisplayOptions(title, nodeDimensions);
   const optimalRows = textOptions.optimalLines;
 
+  const BASE_FONT_PX = 13.5; // keep font size constant, independent of node width
+
   return (
     <div 
-      className={`group flex items-center justify-center rounded-lg shadow-sm border ${
+      className={`group rounded-lg shadow-sm border ${
         isDragging ? 'cursor-grabbing' : isEditing ? 'cursor-text' : isSelected ? 'cursor-grab' : 'cursor-pointer'
       }`}
       style={{
@@ -360,6 +383,7 @@ export default function MindMapNode({
       }}
       onMouseDown={handleMouseDown}
       onMouseUp={handleMouseUp}
+      onMouseMove={handleMouseMoveLocal}
       onClick={handleClick}
     >
       {/* Hover Lightbulb - top-left (to avoid delete button area) */}
@@ -381,9 +405,9 @@ export default function MindMapNode({
           onChange={(e) => setEditTitle(e.target.value)}
           onKeyDown={handleKeyDown}
           onBlur={handleEditConfirm}
-          className="w-full h-full bg-transparent text-slate-700 font-semibold text-center px-1.5 py-1 border-none outline-none resize-none overflow-y-auto"
+          className="w-full h-full bg-transparent text-slate-700 font-semibold text-left px-2 py-2 border-none outline-none resize-none overflow-y-auto"
           style={{ 
-            fontSize: `${Math.max(12, Math.min(18, width * 0.107))}px`,
+            fontSize: `${BASE_FONT_PX}px`,
             lineHeight: '1.25',
             wordWrap: 'break-word'
           }}
@@ -394,9 +418,9 @@ export default function MindMapNode({
         />
       ) : (
         <div 
-          className="text-slate-700 font-semibold text-center px-1.5 py-1 leading-snug tracking-[0.01em] pointer-events-none select-none w-full h-full flex items-center justify-center overflow-wrap-anywhere"
+          className="text-slate-700 font-semibold text-left px-2 py-2 leading-snug tracking-[0.01em] pointer-events-none select-none w-full h-full overflow-wrap-anywhere"
           style={{ 
-            fontSize: `${Math.max(12, Math.min(18, width * 0.107))}px`,
+            fontSize: `${BASE_FONT_PX}px`,
             wordWrap: 'break-word',
             whiteSpace: 'pre-wrap',
             lineHeight: '1.25'
