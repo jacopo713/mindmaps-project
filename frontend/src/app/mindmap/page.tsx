@@ -770,65 +770,10 @@ export default function MindMapPage() {
     const text = (inputOverride ?? aiInput).trim();
     if (!text || aiLoading) return;
     const userMsg: AiMessage = { id: Date.now().toString(), role: 'user', content: text };
-    const assistantMsg: AiMessage = { id: (Date.now() + 1).toString(), role: 'assistant', content: '', isStreaming: true };
-    setAiMessages(prev => [...prev, userMsg, assistantMsg]);
+    setAiMessages(prev => [...prev, userMsg]);
     if (!inputOverride) setAiInput('');
-    setAiLoading(true);
 
-    try {
-      aiAbortRef.current = new AbortController();
-
-      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      const context = {
-        selectedNode: selectedNodeId ? nodes.find(n => n.id === selectedNodeId) : null,
-        nodes: nodes.map(n => ({ id: n.id, title: n.title })),
-        connections: connections.map(c => ({ sourceId: c.sourceId, targetId: c.targetId }))
-      };
-      const contextPrefix = `Contesto mappa (JSON)\n${JSON.stringify(context)}\n\n`;
-
-      const res = await fetch(`${backendUrl}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [...aiMessages, { role: 'user', content: contextPrefix + userMsg.content }].map(({ id: _id, isStreaming: _s, ...m }) => m)
-        }),
-        signal: aiAbortRef.current.signal
-      });
-      if (!res.ok) throw new Error('Network response was not ok');
-
-      const reader = res.body?.getReader();
-      const decoder = new TextDecoder();
-      let collected = '';
-      if (reader) {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value);
-          const lines = chunk.split('\n').filter(l => l.trim());
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-            const data = line.slice(6);
-            if (data === '[DONE]') {
-              setAiMessages(prev => prev.map(m => m.id === assistantMsg.id ? { ...m, isStreaming: false } : m));
-              break;
-            }
-            try {
-              const parsed = JSON.parse(data);
-              if (parsed.content) {
-                collected += parsed.content;
-                setAiMessages(prev => prev.map(m => m.id === assistantMsg.id ? { ...m, content: m.content + parsed.content } : m));
-              }
-            } catch {}
-          }
-        }
-      }
-    } catch (e) {
-      setAiMessages(prev => prev.map(m => m.isStreaming ? { ...m, content: 'Errore di rete', isStreaming: false } : m));
-    } finally {
-      setAiLoading(false);
-      aiAbortRef.current = null;
-    }
-    // After the chat completes, try proposing a JSON Patch based on the same request
+    // 1) Prova a interpretare come richiesta di modifica: chiedi direttamente la diff
     try {
       const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
       const currentMap = {
@@ -845,18 +790,77 @@ export default function MindMapPage() {
         const patch: JsonPatchOp[] = Array.isArray(data?.patch) ? data.patch : [];
         const summary: string | null = typeof data?.summary === 'string' ? data.summary : null;
         if (patch.length > 0) {
+          // È una richiesta di modifica: rispondi direttamente con la diff applicabile
           const proposalMsg: AiMessage = {
-            id: (Date.now() + 2).toString(),
+            id: (Date.now() + 1).toString(),
             role: 'assistant',
-            content: 'Proposta modifiche pronta',
+            content: '',
             proposalPatch: patch,
             proposalSummary: summary ?? 'Proposta modifiche alla mappa',
             proposalPending: true
           };
           setAiMessages(prev => [...prev, proposalMsg]);
+          return; // non inviare chat testuale
         }
       }
     } catch {}
+
+    // 2) Non è modifica: effettua risposta chat testuale normale (streaming)
+    setAiLoading(true);
+    try {
+      aiAbortRef.current = new AbortController();
+
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const context = {
+        selectedNode: selectedNodeId ? nodes.find(n => n.id === selectedNodeId) : null,
+        nodes: nodes.map(n => ({ id: n.id, title: n.title })),
+        connections: connections.map(c => ({ sourceId: c.sourceId, targetId: c.targetId }))
+      };
+      const contextPrefix = `Contesto mappa (JSON)\n${JSON.stringify(context)}\n\n`;
+
+      const assistantMsg: AiMessage = { id: (Date.now() + 2).toString(), role: 'assistant', content: '', isStreaming: true };
+      setAiMessages(prev => [...prev, assistantMsg]);
+
+      const res = await fetch(`${backendUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [...aiMessages, { role: 'user', content: contextPrefix + userMsg.content }].map(({ id: _id, isStreaming: _s, proposalPatch: _pp, proposalSummary: _ps, proposalPending: _pd, proposalAppliedAt: _pa, proposalIgnoredAt: _pi, ...m }) => m)
+        }),
+        signal: aiAbortRef.current.signal
+      });
+      if (!res.ok) throw new Error('Network response was not ok');
+
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n').filter(l => l.trim());
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const data = line.slice(6);
+            if (data === '[DONE]') {
+              setAiMessages(prev => prev.map(m => m.id === assistantMsg.id ? { ...m, isStreaming: false } : m));
+              break;
+            }
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.content) {
+                setAiMessages(prev => prev.map(m => m.id === assistantMsg.id ? { ...m, content: m.content + parsed.content } : m));
+              }
+            } catch {}
+          }
+        }
+      }
+    } catch (e) {
+      setAiMessages(prev => prev.map(m => m.isStreaming ? { ...m, content: 'Errore di rete', isStreaming: false } : m));
+    } finally {
+      setAiLoading(false);
+      aiAbortRef.current = null;
+    }
   }, [aiInput, aiLoading, aiMessages, selectedNodeId, nodes, connections]);
 
   const suggestTitles = useCallback(async () => {
