@@ -892,13 +892,86 @@ export default function MindMapPage() {
     setAiMessages(prev => {
       const m = prev.find(x => x.id === messageId);
       if (!m || !m.proposalPatch || !m.proposalPending) return prev;
-      const newState = applyJsonPatch({ nodes, connections }, m.proposalPatch);
-      setNodes(newState.nodes);
-      setConnections(newState.connections);
+
+      // Apply patch
+      const patched = applyJsonPatch({ nodes, connections }, m.proposalPatch);
+
+      // Heuristic placement for newly added nodes
+      const addedNodeIds = new Set<string>();
+      for (const op of m.proposalPatch) {
+        if (op.op === 'add' && typeof op.path === 'string' && op.path.startsWith('/nodes')) {
+          const v: any = op.value;
+          if (v && typeof v === 'object' && typeof v.id === 'string') addedNodeIds.add(v.id);
+        }
+      }
+
+      if (addedNodeIds.size > 0) {
+        const updatedNodes = patched.nodes.map(n => ({ ...n }));
+
+        // Build quick index for existing nodes pre-patch
+        const beforeIndex = new Map(nodes.map(n => [n.id, n] as const));
+
+        // Map to count placements per anchor to stagger
+        const anchorCount = new Map<string, number>();
+
+        // Find connections that reference new nodes to determine anchors
+        const relatedConnections = patched.connections.filter(c => addedNodeIds.has(c.sourceId) || addedNodeIds.has(c.targetId));
+
+        const placeNear = (newNodeId: string, anchorNodeId: string | null) => {
+          const idx = updatedNodes.findIndex(n => n.id === newNodeId);
+          if (idx === -1) return;
+          const node = updatedNodes[idx];
+          // Only adjust if node is at default 0,0 (meaning no coordinates were provided)
+          const needsPlacement = node.x === 0 && node.y === 0;
+          if (!needsPlacement) return;
+
+          let ax = 0, ay = 0;
+          if (anchorNodeId) {
+            const anchor = (patched.nodes.find(n => n.id === anchorNodeId) || beforeIndex.get(anchorNodeId)) as any;
+            if (anchor) { ax = anchor.x; ay = anchor.y; }
+          } else if (selectedNodeId) {
+            const anchor = nodes.find(n => n.id === selectedNodeId);
+            if (anchor) { ax = anchor.x; ay = anchor.y; }
+          } else if (nodes.length > 0) {
+            ax = nodes[0].x; ay = nodes[0].y;
+          }
+
+          const count = anchorNodeId ? (anchorCount.get(anchorNodeId) || 0) : 0;
+          anchorNodeId && anchorCount.set(anchorNodeId, count + 1);
+
+          // Offset pattern: spread to the right with slight vertical staggering
+          const dx = 220 + (count % 3) * 20;
+          const dy = ((Math.floor(count / 3) % 2) === 0 ? -1 : 1) * (40 + (count % 3) * 10);
+
+          updatedNodes[idx] = { ...node, x: ax + dx, y: ay + dy };
+        };
+
+        // First, place those with explicit anchor from a connection
+        for (const newId of addedNodeIds) {
+          const conn = relatedConnections.find(c => c.sourceId === newId || c.targetId === newId);
+          if (conn) {
+            const anchorId = conn.sourceId === newId ? conn.targetId : conn.sourceId;
+            placeNear(newId, anchorId);
+          }
+        }
+        // Then, place remaining near selected node or first node
+        for (const newId of addedNodeIds) {
+          const idx = updatedNodes.findIndex(n => n.id === newId);
+          if (idx !== -1) {
+            const n = updatedNodes[idx];
+            if (n.x === 0 && n.y === 0) placeNear(newId, null);
+          }
+        }
+
+        setNodes(updatedNodes);
+      } else {
+        setNodes(patched.nodes);
+      }
+      setConnections(patched.connections);
       setIsDirty(true);
       return prev.map(x => x.id === messageId ? { ...x, proposalPending: false, proposalAppliedAt: Date.now() } : x);
     });
-  }, [nodes, connections]);
+  }, [nodes, connections, selectedNodeId]);
 
   const ignoreProposalFromMessage = useCallback((messageId: string) => {
     setAiMessages(prev => prev.map(x => x.id === messageId ? { ...x, proposalPending: false, proposalIgnoredAt: Date.now() } : x));

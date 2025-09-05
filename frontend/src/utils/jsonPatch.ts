@@ -43,7 +43,20 @@ export function applyJsonPatch(state: MapState, patch: JsonPatchOp[]): MapState 
       if (segments.length === 1) {
         // Path points to the array itself. Only allow add with '-'
         if (op.op === 'add' && op.value && op.path.endsWith('/-')) {
-          arr.push(clone(op.value));
+          const v = clone(op.value);
+          if (target === 'connections') {
+            if (v.type === undefined) v.type = 'curved';
+            if (v.width === undefined) v.width = 2;
+            if (v.showArrow === undefined) v.showArrow = true;
+            if (v.arrowPosition === undefined) v.arrowPosition = 'end';
+            if (v.color === undefined) v.color = '#6b7280';
+            if (v.relation === undefined) v.relation = 'generico';
+          }
+          if (target === 'nodes') {
+            if (typeof v.x !== 'number') v.x = 0;
+            if (typeof v.y !== 'number') v.y = 0;
+          }
+          arr.push(v);
         }
         continue;
       }
@@ -72,6 +85,13 @@ export function applyJsonPatch(state: MapState, patch: JsonPatchOp[]): MapState 
             if (target === 'nodes') {
               if (typeof value.x !== 'number') value.x = 0;
               if (typeof value.y !== 'number') value.y = 0;
+            } else if (target === 'connections') {
+              if (value.type === undefined) value.type = 'curved';
+              if (value.width === undefined) value.width = 2;
+              if (value.showArrow === undefined) value.showArrow = true;
+              if (value.arrowPosition === undefined) value.arrowPosition = 'end';
+              if (value.color === undefined) value.color = '#6b7280';
+              if (value.relation === undefined) value.relation = 'generico';
             }
             arr.push(value);
           } else if (index >= 0 && index <= arr.length) {
@@ -135,4 +155,3 @@ export function applyJsonPatch(state: MapState, patch: JsonPatchOp[]): MapState 
 
   return working;
 }
-
