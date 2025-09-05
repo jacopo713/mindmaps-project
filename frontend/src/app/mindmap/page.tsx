@@ -751,11 +751,7 @@ export default function MindMapPage() {
   const [aiLoading, setAiLoading] = useState(false);
   const aiAbortRef = useRef<AbortController | null>(null);
 
-  // Removed requestPlan (AI planning) to keep only chat
-
-  // Removed applySelectedOps (AI planning)
-
-  // Removed plan auto-apply side effect
+  // Chat AI semplificata
 
   const sendAiMessage = useCallback(async (inputOverride?: string) => {
     const text = (inputOverride ?? aiInput).trim();
@@ -1328,7 +1324,6 @@ export default function MindMapPage() {
       {/* Save/Undo controls */}
       <div className="absolute top-4 right-4 z-20 pointer-events-auto flex gap-2">
         {/* Title suggestions rimossi */}
-        {/* Deprecated node __suggestions panel removed */}
         <button
           onClick={() => {
             if (historyRef.current.length === 0) return;
@@ -1529,35 +1524,9 @@ export default function MindMapPage() {
         </div>
         <div className="p-3 border-b border-gray-200" />
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
-          {/* Banner piano rimosso */}
           {aiMessages.length === 0 && (
             <div className="text-xs text-gray-500">Fai domande sulla mappa. Il contesto include i nodi e quello selezionato.</div>
           )}
-          {/* plan removed: {planOps.length > 0 && (
-            <div className="bg-white border border-gray-200 rounded-lg p-3 space-y-2">
-              <div className="text-sm font-medium text-gray-700">Piano proposto</div>
-              {planSummary && <div className="text-xs text-gray-600">{planSummary}</div>}
-              <div className="space-y-1 max-h-56 overflow-y-auto">
-                {planOps.map((op, idx) => (
-                  <label key={idx} className="flex items-start gap-2 text-xs text-gray-700">
-                    <input type="checkbox" checked={!!planSelected[idx]} onChange={(e) => setPlanSelected(prev => ({ ...prev, [idx]: e.target.checked }))} />
-                    <span className="break-all">
-                      {op.op}
-                      {op.nodeId ? ` nodeId=${op.nodeId}` : ''}
-                      {op.title ? ` title="${op.title}"` : ''}
-                      {op.sourceId ? ` source=${op.sourceId}` : ''}
-                      {op.targetId ? ` target=${op.targetId}` : ''}
-                      {typeof op.x === 'number' || typeof op.y === 'number' ? ` x=${op.x ?? ''} y=${op.y ?? ''}` : ''}
-                    </span>
-                  </label>
-                ))}
-              </div>
-              <div className="pt-2 flex items-center gap-2">
-                <button onClick={applySelectedOps} className="px-3 py-1.5 bg-blue-600 text-white rounded text-xs hover:bg-blue-700">Applica selezionate</button>
-                <button onClick={() => { setPlanOps([]); setPlanSelected({}); setPlanSummary(''); setPlanBaseVersion(0); }} className="px-3 py-1.5 bg-gray-100 text-gray-700 rounded text-xs border border-gray-300 hover:bg-gray-200">Scarta piano</button>
-              </div>
-            </div>
-          )} */}
           {aiMessages.map(m => (
             <div key={m.id} className={m.role === 'user' ? 'ml-auto max-w-[90%] bg-[#eff6ff] rounded-lg p-3 text-sm' : 'max-w-[90%] p-3 text-sm'}>
               <div className={m.role === 'user' ? 'text-gray-800' : 'text-gray-700'}>{m.content}</div>
@@ -1575,7 +1544,6 @@ export default function MindMapPage() {
               className="w-full resize-none bg-[#f3f4f6] focus:outline-none border-none pr-12 text-sm"
               rows={2}
             />
-            {/* Pianifica modifiche rimosso */}
             <button
               onClick={async () => {
                 const msg = aiInput.trim();
