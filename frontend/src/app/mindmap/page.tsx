@@ -399,7 +399,7 @@ export default function MindMapPage() {
 
     // If title is a single question mark, fetch suggestions for this node
     if (newTitle.trim() === '?') {
-      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
       const context = {
         nodeId,
         nodes: nodes.map(n => ({ id: n.id, title: n.title })),
@@ -783,20 +783,27 @@ export default function MindMapPage() {
   const [planBaseVersion, setPlanBaseVersion] = useState<number>(0);
   const [planOps, setPlanOps] = useState<PlanOperation[]>([]);
   const [planSelected, setPlanSelected] = useState<Record<number, boolean>>({});
+  const planPromptedRef = useRef(false);
+  const [showPlanBanner, setShowPlanBanner] = useState(false);
 
-  const requestPlan = useCallback(async () => {
-    const instruction = aiInput.trim() || window.prompt('Descrivi cosa vuoi modificare nella mappa:') || '';
+  const requestPlan = useCallback(async (customInstruction?: any) => {
+    const provided = typeof customInstruction === 'string' ? customInstruction : undefined;
+    const base = provided ?? aiInput.trim();
+    const instruction: string = base || window.prompt('Descrivi cosa vuoi modificare nella mappa:') || '';
     if (!instruction) return;
-    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
     try {
+      // Strip any transient props and ensure pure-JSON structures
+      const safeNodes = nodes.map(n => ({ id: n.id, title: n.title, x: n.x, y: n.y, color: n.color, borderColor: n.borderColor }));
+      const safeConnections = connections.map(c => ({ id: c.id, sourceId: c.sourceId, targetId: c.targetId, type: c.type, curvature: c.curvature, adaptiveCurvature: c.adaptiveCurvature, curvatureDirection: c.curvatureDirection, color: c.color, width: c.width, showArrow: c.showArrow, arrowPosition: c.arrowPosition, relation: c.relation }));
       const body = {
         instruction,
         selectedNodeId: selectedNodeId,
         map: {
           id: currentMindMapId,
           title: 'Mind Map',
-          nodes: nodes,
-          connections: connections,
+          nodes: safeNodes,
+          connections: safeConnections,
           createdAt: Date.now(),
           updatedAt: Date.now(),
         }
@@ -809,9 +816,31 @@ export default function MindMapPage() {
       const initialSel: Record<number, boolean> = {};
       (Array.isArray(data?.operations) ? data.operations : []).forEach((_: any, i: number) => { initialSel[i] = true; });
       setPlanSelected(initialSel);
-      setAiInput('');
+      if (!provided) setAiInput('');
+      setShowPlanBanner(true);
+      // Immediate prompt as fallback if banner not noticed
+      const total = (Array.isArray(data?.operations) ? data.operations.length : 0) || 0;
+      if (total > 0) {
+        const ok = window.confirm(`Piano generato con ${total} operazione/i. Vuoi applicarle ora?`);
+        if (ok) {
+          setTimeout(() => { applySelectedOps().catch(() => {}); }, 0);
+        }
+      }
     } catch (e) {
+      console.error('Plan request failed', e);
       alert('Errore nella generazione del piano');
+      // Client-side minimal fallback so the user still sees something actionable
+      const now = Date.now();
+      const instrText = typeof instruction === 'string' ? instruction : String(instruction || '');
+      const firstLine = instrText.split('\n')[0].slice(0, 40);
+      const fallbackOps: PlanOperation[] = selectedNodeId
+        ? [{ op: 'rename_node', nodeId: selectedNodeId, title: firstLine || 'Idea Migliore' }]
+        : [{ op: 'create_node', title: firstLine || 'Nuovo Nodo', x: 0, y: 0 }];
+      setPlanSummary('Piano locale (fallback)');
+      setPlanBaseVersion(now);
+      setPlanOps(fallbackOps);
+      setPlanSelected({ 0: true });
+      setShowPlanBanner(true);
     }
   }, [aiInput, selectedNodeId, currentMindMapId, nodes, connections]);
 
@@ -819,15 +848,17 @@ export default function MindMapPage() {
     const selectedOps = planOps.filter((_, i) => planSelected[i]);
     if (selectedOps.length === 0) { alert('Seleziona almeno un’operazione.'); return; }
     if (!window.confirm(`Confermi l'applicazione di ${selectedOps.length} operazione/i?`)) return;
-    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
     try {
+      const safeNodes = nodes.map(n => ({ id: n.id, title: n.title, x: n.x, y: n.y, color: n.color, borderColor: n.borderColor }));
+      const safeConnections = connections.map(c => ({ id: c.id, sourceId: c.sourceId, targetId: c.targetId, type: c.type, curvature: c.curvature, adaptiveCurvature: c.adaptiveCurvature, curvatureDirection: c.curvatureDirection, color: c.color, width: c.width, showArrow: c.showArrow, arrowPosition: c.arrowPosition, relation: c.relation }));
       const body = {
         baseVersion: planBaseVersion || Date.now(),
         map: {
           id: currentMindMapId,
           title: 'Mind Map',
-          nodes,
-          connections,
+          nodes: safeNodes,
+          connections: safeConnections,
           createdAt: Date.now(),
           updatedAt: planBaseVersion || Date.now(),
         },
@@ -848,18 +879,36 @@ export default function MindMapPage() {
     }
   }, [planOps, planSelected, planBaseVersion, currentMindMapId, nodes, connections]);
 
-  const sendAiMessage = useCallback(async () => {
-    if (!aiInput.trim() || aiLoading) return;
-    const userMsg: AiMessage = { id: Date.now().toString(), role: 'user', content: aiInput.trim() };
+  // When a plan is ready, ask the user if they want to apply it
+  useEffect(() => {
+    if (planOps.length > 0 && !planPromptedRef.current) {
+      planPromptedRef.current = true;
+      setTimeout(async () => {
+        const count = planOps.filter((_, i) => planSelected[i] !== false).length || planOps.length;
+        const ok = window.confirm(`Piano generato con ${count} operazione/i. Vuoi applicarle ora?`);
+        if (ok) {
+          await applySelectedOps();
+        }
+      }, 0);
+    }
+    if (planOps.length === 0) {
+      planPromptedRef.current = false;
+    }
+  }, [planOps, planSelected, applySelectedOps]);
+
+  const sendAiMessage = useCallback(async (inputOverride?: string) => {
+    const text = (inputOverride ?? aiInput).trim();
+    if (!text || aiLoading) return;
+    const userMsg: AiMessage = { id: Date.now().toString(), role: 'user', content: text };
     const assistantMsg: AiMessage = { id: (Date.now() + 1).toString(), role: 'assistant', content: '', isStreaming: true };
     setAiMessages(prev => [...prev, userMsg, assistantMsg]);
-    setAiInput('');
+    if (!inputOverride) setAiInput('');
     setAiLoading(true);
 
     try {
       aiAbortRef.current = new AbortController();
 
-      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
       const context = {
         selectedNode: selectedNodeId ? nodes.find(n => n.id === selectedNodeId) : null,
         nodes: nodes.map(n => ({ id: n.id, title: n.title })),
@@ -917,6 +966,8 @@ export default function MindMapPage() {
             const initSel: Record<number, boolean> = {};
             (data.operations as any[]).forEach((_: any, i: number) => { initSel[i] = true; });
             setPlanSelected(initSel);
+            // Surface a visible action even if plan was inferred from chat
+            setShowPlanBanner(true);
           }
         }
       } catch {}
@@ -931,7 +982,7 @@ export default function MindMapPage() {
   const suggestTitles = useCallback(async () => {
     const node = selectedNodeId ? nodes.find(n => n.id === selectedNodeId) : null;
     if (!node) return alert('Seleziona prima un nodo.');
-    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
     try {
       const r = await fetch(`${backendUrl}/api/suggest_node_titles`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1390,7 +1441,7 @@ export default function MindMapPage() {
               onSuggestExpand={(id) => {
                 if (expandingNodeId) return;
                 setExpandingNodeId(id);
-                const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+                const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
                 const ctx = {
                   nodes: nodes.map(n => ({ id: n.id, title: n.title })),
                   connections: connections.map(c => ({ sourceId: c.sourceId, targetId: c.targetId })),
@@ -1675,12 +1726,21 @@ export default function MindMapPage() {
             title="Suggerisci nuovi titoli per il nodo selezionato"
           >Titoli</button>
           <button
-            onClick={requestPlan}
+            onClick={() => requestPlan()}
             className="px-2 py-1.5 bg-white border border-gray-300 rounded text-xs hover:bg-gray-50"
             title="Genera piano AI di modifiche (con conferma)"
           >Piano AI</button>
         </div>
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          {showPlanBanner && planOps.length > 0 && (
+            <div className="bg-blue-50 border border-blue-200 text-blue-800 rounded-lg p-3 flex items-center justify-between sticky top-0 z-10">
+              <div className="text-xs">Piano generato: {planOps.length} operazione/i.</div>
+              <div className="flex items-center gap-2">
+                <button onClick={applySelectedOps} className="px-2 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700">Applica tutte</button>
+                <button onClick={() => setShowPlanBanner(false)} className="px-2 py-1 bg-white border border-blue-300 rounded text-xs hover:bg-blue-50">Chiudi</button>
+              </div>
+            </div>
+          )}
           {aiMessages.length === 0 && (
             <div className="text-xs text-gray-500">Suggerisci titoli, chiedi consigli o azioni sulla mappa. Il contesto include i nodi e quello selezionato.</div>
           )}
@@ -1731,7 +1791,16 @@ export default function MindMapPage() {
               Pianifica modifiche
             </label>
             <button
-              onClick={aiPlanMode ? requestPlan : sendAiMessage}
+              onClick={async () => {
+                const msg = aiInput.trim();
+                if (!msg || aiLoading) return;
+                if (aiPlanMode) {
+                  await requestPlan(msg);
+                  await sendAiMessage(msg);
+                } else {
+                  await sendAiMessage();
+                }
+              }}
               disabled={!aiInput.trim() || aiLoading}
               className={`absolute bottom-2 right-2 w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 ${aiInput.trim() && !aiLoading ? 'bg-[#007AFF] hover:bg-[#0056CC] cursor-pointer' : 'bg-[#CCCCCC] cursor-not-allowed'}`}
               title={aiLoading ? 'Invio in corso…' : 'Invia messaggio'}
