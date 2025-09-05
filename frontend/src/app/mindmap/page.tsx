@@ -745,19 +745,26 @@ export default function MindMapPage() {
   const [activeTool, setActiveTool] = useState<ToolType>('select');
   const [isRelationMenuOpen, setIsRelationMenuOpen] = useState<boolean>(false);
 
-  // AI Sidebar state (chat only)
-  type AiMessage = { id: string; role: 'user' | 'assistant'; content: string; isStreaming?: boolean };
+  // AI Sidebar state (chat-as-agent)
+  type AiMessage = {
+    id: string;
+    role: 'user' | 'assistant';
+    content: string;
+    isStreaming?: boolean;
+    // Optional: AI proposal payload (JSON Patch)
+    proposalPatch?: JsonPatchOp[];
+    proposalSummary?: string | null;
+    proposalPending?: boolean; // true until approved/ignored/applied
+    proposalAppliedAt?: number;
+    proposalIgnoredAt?: number;
+  };
   const [aiMessages, setAiMessages] = useState<AiMessage[]>([]);
   const [aiInput, setAiInput] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
   const aiAbortRef = useRef<AbortController | null>(null);
-  // AI Diff proposal state
-  const [diffLoading, setDiffLoading] = useState(false);
-  const [diffPatch, setDiffPatch] = useState<JsonPatchOp[] | null>(null);
-  const [diffSummary, setDiffSummary] = useState<string | null>(null);
-  const [showDiffPanel, setShowDiffPanel] = useState(false);
 
-  // Chat AI semplificata
+
+  // Chat AI con agente diff (propose_map_diff)
 
   const sendAiMessage = useCallback(async (inputOverride?: string) => {
     const text = (inputOverride ?? aiInput).trim();
@@ -821,6 +828,35 @@ export default function MindMapPage() {
       setAiLoading(false);
       aiAbortRef.current = null;
     }
+    // After the chat completes, try proposing a JSON Patch based on the same request
+    try {
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const currentMap = {
+        nodes: nodes.map(n => ({ id: n.id, title: n.title, x: n.x, y: n.y, borderColor: n.borderColor })),
+        connections: connections.map(c => ({ id: c.id, sourceId: c.sourceId, targetId: c.targetId }))
+      };
+      const selection = selectedNodeId ? { selectedNodeId } : undefined;
+      const r = await fetch(`${backendUrl}/api/propose_map_diff`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_request: text, current_map: currentMap, selection, format: 'json-patch' })
+      });
+      if (r.ok) {
+        const data = await r.json();
+        const patch: JsonPatchOp[] = Array.isArray(data?.patch) ? data.patch : [];
+        const summary: string | null = typeof data?.summary === 'string' ? data.summary : null;
+        if (patch.length > 0) {
+          const proposalMsg: AiMessage = {
+            id: (Date.now() + 2).toString(),
+            role: 'assistant',
+            content: 'Proposta modifiche pronta',
+            proposalPatch: patch,
+            proposalSummary: summary ?? 'Proposta modifiche alla mappa',
+            proposalPending: true
+          };
+          setAiMessages(prev => [...prev, proposalMsg]);
+        }
+      }
+    } catch {}
   }, [aiInput, aiLoading, aiMessages, selectedNodeId, nodes, connections]);
 
   const suggestTitles = useCallback(async () => {
@@ -847,53 +883,22 @@ export default function MindMapPage() {
     } catch {}
   }, [selectedNodeId, nodes, connections]);
 
-  // Propose AI diff (JSON Patch)
-  const proposeAiDiff = useCallback(async () => {
-    const requestText = aiInput.trim() || window.prompt('Descrivi le modifiche desiderate (es. "Rinomina il nodo 2 in Marketing Digitale e collega 2 con 7")') || '';
-    if (!requestText) return;
-    if (diffLoading) return;
-    setDiffLoading(true);
-    setDiffPatch(null);
-    setDiffSummary(null);
-    try {
-      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      const currentMap = {
-        nodes: nodes.map(n => ({ id: n.id, title: n.title, x: n.x, y: n.y, borderColor: n.borderColor })),
-        connections: connections.map(c => ({ id: c.id, sourceId: c.sourceId, targetId: c.targetId }))
-      };
-      const selection = selectedNodeId ? { selectedNodeId } : undefined;
-      const res = await fetch(`${backendUrl}/api/propose_map_diff`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_request: requestText, current_map: currentMap, selection, format: 'json-patch' })
-      });
-      if (!res.ok) throw new Error('Errore di rete');
-      const data = await res.json();
-      const patch: JsonPatchOp[] = Array.isArray(data?.patch) ? data.patch : [];
-      const summary: string | null = typeof data?.summary === 'string' ? data.summary : null;
-      setDiffPatch(patch);
-      setDiffSummary(summary);
-      setShowDiffPanel(true);
-    } catch (e: any) {
-      alert('Errore nella proposta modifiche: ' + (e?.message || 'sconosciuto'));
-    } finally {
-      setDiffLoading(false);
-    }
-  }, [aiInput, diffLoading, nodes, connections, selectedNodeId]);
+  // Applica/ignora proposta direttamente dal messaggio della chat
+  const applyProposalFromMessage = useCallback((messageId: string) => {
+    setAiMessages(prev => {
+      const m = prev.find(x => x.id === messageId);
+      if (!m || !m.proposalPatch || !m.proposalPending) return prev;
+      const newState = applyJsonPatch({ nodes, connections }, m.proposalPatch);
+      setNodes(newState.nodes);
+      setConnections(newState.connections);
+      setIsDirty(true);
+      return prev.map(x => x.id === messageId ? { ...x, proposalPending: false, proposalAppliedAt: Date.now() } : x);
+    });
+  }, [nodes, connections]);
 
-  const applyProposedDiff = useCallback(() => {
-    if (!diffPatch || diffPatch.length === 0) {
-      setShowDiffPanel(false);
-      return;
-    }
-    const newState = applyJsonPatch({ nodes, connections }, diffPatch);
-    setNodes(newState.nodes);
-    setConnections(newState.connections);
-    setIsDirty(true);
-    setShowDiffPanel(false);
-    setDiffPatch(null);
-    setDiffSummary(null);
-  }, [diffPatch, nodes, connections]);
+  const ignoreProposalFromMessage = useCallback((messageId: string) => {
+    setAiMessages(prev => prev.map(x => x.id === messageId ? { ...x, proposalPending: false, proposalIgnoredAt: Date.now() } : x));
+  }, []);
 
 
   // Style helpers for relation selector (colors + SVG icons)
@@ -1576,14 +1581,40 @@ export default function MindMapPage() {
             {selectedNodeId ? `Nodo selezionato` : `Nessun nodo`}
           </div>
         </div>
-        <div className="p-3 border-b border-gray-200 text-xs text-gray-600">Proponi modifiche con diff JSON, poi approva.</div>
+        <div className="p-3 border-b border-gray-200 text-xs text-gray-600">Chiedi modifiche: l'assistente proporrà un diff applicabile.</div>
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
           {aiMessages.length === 0 && (
             <div className="text-xs text-gray-500">Fai domande sulla mappa. Il contesto include i nodi e quello selezionato.</div>
           )}
           {aiMessages.map(m => (
             <div key={m.id} className={m.role === 'user' ? 'ml-auto max-w-[90%] bg-[#eff6ff] rounded-lg p-3 text-sm' : 'max-w-[90%] p-3 text-sm'}>
-              <div className={m.role === 'user' ? 'text-gray-800' : 'text-gray-700'}>{m.content}</div>
+              {/* Standard bubble */}
+              {(!m.proposalPatch || m.proposalPatch.length === 0) && (
+                <div className={m.role === 'user' ? 'text-gray-800' : 'text-gray-700'}>{m.content}</div>
+              )}
+              {/* Proposal bubble */}
+              {m.proposalPatch && m.proposalPatch.length > 0 && (
+                <div className="space-y-2">
+                  <div className="mb-1 text-gray-800 font-medium">{m.proposalSummary || 'Proposta modifiche'}</div>
+                  <div className="space-y-1">
+                    {m.proposalPatch.map((op, i) => (
+                      <div key={i} className="font-mono text-xs p-2 bg-gray-50 border border-gray-200 rounded overflow-x-auto">
+                        {JSON.stringify(op)}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2 pt-1">
+                    {m.proposalPending ? (
+                      <>
+                        <button onClick={() => applyProposalFromMessage(m.id)} className="px-2 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white text-xs">Approva e Applica</button>
+                        <button onClick={() => ignoreProposalFromMessage(m.id)} className="px-2 py-1 rounded border text-xs">Ignora</button>
+                      </>
+                    ) : (
+                      <span className="text-xs text-gray-500">{m.proposalAppliedAt ? 'Applicata' : 'Ignorata'}</span>
+                    )}
+                  </div>
+                </div>
+              )}
               {m.isStreaming && <div className="flex items-center gap-1 mt-1"><span className="w-1 h-1 bg-gray-400 rounded-full animate-pulse"/><span className="w-1 h-1 bg-gray-400 rounded-full animate-pulse" style={{animationDelay:'0.2s'}}/><span className="w-1 h-1 bg-gray-400 rounded-full animate-pulse" style={{animationDelay:'0.4s'}}/></div>}
             </div>
           ))}
@@ -1617,49 +1648,10 @@ export default function MindMapPage() {
               )}
             </button>
           </div>
-          <div className="flex items-center gap-2 mt-2">
-            <button
-              onClick={proposeAiDiff}
-              disabled={diffLoading}
-              className={`px-3 py-2 rounded text-white text-xs ${diffLoading ? 'bg-gray-400' : 'bg-emerald-600 hover:bg-emerald-700'}`}
-            >
-              {diffLoading ? 'Calcolo diff…' : 'Proponi Modifiche (Diff)'}
-            </button>
-            <div className="text-gray-500 ml-auto" style={{fontSize: '11px', lineHeight: '14px'}}>AI-generated, review before apply</div>
-          </div>
+          <div className="text-gray-500 mt-2" style={{fontSize: '11px', lineHeight: '14px'}}>L'agente può proporre modifiche applicabili.</div>
         </div>
       </aside>
 
-      {/* Diff Panel Modal */}
-      {showDiffPanel && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/30" onClick={() => setShowDiffPanel(false)} />
-          <div className="relative z-10 w-[560px] max-w-[95vw] bg-white rounded-xl shadow-2xl border border-gray-200">
-            <div className="p-4 border-b border-gray-200 flex items-center">
-              <div className="font-semibold text-gray-800 text-sm">Proposta modifiche (JSON Patch)</div>
-              <button className="ml-auto text-gray-500 hover:text-gray-700" onClick={() => setShowDiffPanel(false)}>✕</button>
-            </div>
-            <div className="p-4 max-h-[60vh] overflow-y-auto text-sm">
-              {diffSummary && (
-                <div className="mb-3 p-2 bg-emerald-50 text-emerald-800 rounded border border-emerald-200">{diffSummary}</div>
-              )}
-              {(!diffPatch || diffPatch.length === 0) ? (
-                <div className="text-gray-500">Nessuna modifica proposta.</div>
-              ) : (
-                <div className="space-y-2">
-                  {diffPatch.map((op, i) => (
-                    <div key={i} className="font-mono text-xs p-2 bg-gray-50 border border-gray-200 rounded">{JSON.stringify(op)}</div>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="p-4 border-t border-gray-200 flex items-center gap-2">
-              <button onClick={() => setShowDiffPanel(false)} className="px-3 py-2 rounded border text-sm">Annulla</button>
-              <button onClick={applyProposedDiff} className="ml-auto px-3 py-2 rounded bg-blue-600 hover:bg-blue-700 text-white text-sm">Approva e Applica</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
