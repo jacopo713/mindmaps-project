@@ -121,7 +121,6 @@ export default function MindMapPage() {
   const [connectionDragPosition, setConnectionDragPosition] = useState<{ x: number; y: number } | null>(null);
   const [connectionDragStartNode, setConnectionDragStartNode] = useState<{ id: string; x: number; y: number } | null>(null);
   const [expandingNodeId, setExpandingNodeId] = useState<string | null>(null);
-  const [titleSuggestions, setTitleSuggestions] = useState<{ nodeId: string; options: string[] } | null>(null);
   
   // Base node dimensions (will be calculated dynamically per node)
   const { width: baseNodeWidth, height: baseNodeHeight } = getDefaultNodeSize();
@@ -397,28 +396,7 @@ export default function MindMapPage() {
     );
     setIsDirty(true);
 
-    // If title is a single question mark, fetch suggestions for this node
-    if (newTitle.trim() === '?') {
-      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      const context = {
-        nodeId,
-        nodes: nodes.map(n => ({ id: n.id, title: n.title })),
-        connections: connections.map(c => ({ sourceId: c.sourceId, targetId: c.targetId })),
-      } as any;
-      fetch(`${backendUrl}/api/suggest_node_titles`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ context }),
-      })
-        .then(res => res.json())
-        .then((data) => {
-          const suggestions: string[] = Array.isArray(data?.suggestions) ? data.suggestions : [];
-          if (suggestions.length === 0) return;
-          // Attach suggestions to node (transient UI state)
-          setNodes(prev => prev.map(n => (n.id === nodeId ? ({ ...(n as any), __suggestions: suggestions }) : n)));
-        })
-        .catch(() => {});
-    }
+    // Removed AI title suggestion on '?' to keep only normal chat
   }, [nodes, connections]);
 
   const handleEditStateChange = useCallback((nodeId: string, isEditing: boolean) => {
@@ -766,135 +744,18 @@ export default function MindMapPage() {
   const [activeTool, setActiveTool] = useState<ToolType>('select');
   const [isRelationMenuOpen, setIsRelationMenuOpen] = useState<boolean>(false);
 
-  // AI Sidebar state
+  // AI Sidebar state (chat only)
   type AiMessage = { id: string; role: 'user' | 'assistant'; content: string; isStreaming?: boolean };
   const [aiMessages, setAiMessages] = useState<AiMessage[]>([]);
   const [aiInput, setAiInput] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
-  const [aiPlanMode, setAiPlanMode] = useState(false);
   const aiAbortRef = useRef<AbortController | null>(null);
 
-  // Plan/Apply state
-  type PlanOperation = {
-    op: 'rename_node' | 'create_node' | 'delete_node' | 'move_node' | 'connect_nodes' | 'disconnect_nodes' | 'recolor_node';
-    nodeId?: string; title?: string; x?: number; y?: number; dx?: number; dy?: number; sourceId?: string; targetId?: string; relation?: string; color?: string; borderColor?: string;
-  };
-  const [planSummary, setPlanSummary] = useState<string>('');
-  const [planBaseVersion, setPlanBaseVersion] = useState<number>(0);
-  const [planOps, setPlanOps] = useState<PlanOperation[]>([]);
-  const [planSelected, setPlanSelected] = useState<Record<number, boolean>>({});
-  const planPromptedRef = useRef(false);
-  const [showPlanBanner, setShowPlanBanner] = useState(false);
+  // Removed requestPlan (AI planning) to keep only chat
 
-  const requestPlan = useCallback(async (customInstruction?: any) => {
-    const provided = typeof customInstruction === 'string' ? customInstruction : undefined;
-    const base = provided ?? aiInput.trim();
-    const instruction: string = base || window.prompt('Descrivi cosa vuoi modificare nella mappa:') || '';
-    if (!instruction) return;
-    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-    try {
-      // Strip any transient props and ensure pure-JSON structures
-      const safeNodes = nodes.map(n => ({ id: n.id, title: n.title, x: n.x, y: n.y, color: n.color, borderColor: n.borderColor }));
-      const safeConnections = connections.map(c => ({ id: c.id, sourceId: c.sourceId, targetId: c.targetId, type: c.type, curvature: c.curvature, adaptiveCurvature: c.adaptiveCurvature, curvatureDirection: c.curvatureDirection, color: c.color, width: c.width, showArrow: c.showArrow, arrowPosition: c.arrowPosition, relation: c.relation }));
-      const body = {
-        instruction,
-        selectedNodeId: selectedNodeId,
-        map: {
-          id: currentMindMapId,
-          title: 'Mind Map',
-          nodes: safeNodes,
-          connections: safeConnections,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        }
-      };
-      const r = await fetch(`${backendUrl}/api/agent/plan`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      const data = await r.json();
-      setPlanSummary(data?.summary || '');
-      setPlanBaseVersion(data?.baseVersion || 0);
-      setPlanOps(Array.isArray(data?.operations) ? data.operations : []);
-      const initialSel: Record<number, boolean> = {};
-      (Array.isArray(data?.operations) ? data.operations : []).forEach((_: any, i: number) => { initialSel[i] = true; });
-      setPlanSelected(initialSel);
-      if (!provided) setAiInput('');
-      setShowPlanBanner(true);
-      // Immediate prompt as fallback if banner not noticed
-      const total = (Array.isArray(data?.operations) ? data.operations.length : 0) || 0;
-      if (total > 0) {
-        const ok = window.confirm(`Piano generato con ${total} operazione/i. Vuoi applicarle ora?`);
-        if (ok) {
-          setTimeout(() => { applySelectedOps().catch(() => {}); }, 0);
-        }
-      }
-    } catch (e) {
-      console.error('Plan request failed', e);
-      alert('Errore nella generazione del piano');
-      // Client-side minimal fallback so the user still sees something actionable
-      const now = Date.now();
-      const instrText = typeof instruction === 'string' ? instruction : String(instruction || '');
-      const firstLine = instrText.split('\n')[0].slice(0, 40);
-      const fallbackOps: PlanOperation[] = selectedNodeId
-        ? [{ op: 'rename_node', nodeId: selectedNodeId, title: firstLine || 'Idea Migliore' }]
-        : [{ op: 'create_node', title: firstLine || 'Nuovo Nodo', x: 0, y: 0 }];
-      setPlanSummary('Piano locale (fallback)');
-      setPlanBaseVersion(now);
-      setPlanOps(fallbackOps);
-      setPlanSelected({ 0: true });
-      setShowPlanBanner(true);
-    }
-  }, [aiInput, selectedNodeId, currentMindMapId, nodes, connections]);
+  // Removed applySelectedOps (AI planning)
 
-  const applySelectedOps = useCallback(async () => {
-    const selectedOps = planOps.filter((_, i) => planSelected[i]);
-    if (selectedOps.length === 0) { alert('Seleziona almeno un’operazione.'); return; }
-    if (!window.confirm(`Confermi l'applicazione di ${selectedOps.length} operazione/i?`)) return;
-    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-    try {
-      const safeNodes = nodes.map(n => ({ id: n.id, title: n.title, x: n.x, y: n.y, color: n.color, borderColor: n.borderColor }));
-      const safeConnections = connections.map(c => ({ id: c.id, sourceId: c.sourceId, targetId: c.targetId, type: c.type, curvature: c.curvature, adaptiveCurvature: c.adaptiveCurvature, curvatureDirection: c.curvatureDirection, color: c.color, width: c.width, showArrow: c.showArrow, arrowPosition: c.arrowPosition, relation: c.relation }));
-      const body = {
-        baseVersion: planBaseVersion || Date.now(),
-        map: {
-          id: currentMindMapId,
-          title: 'Mind Map',
-          nodes: safeNodes,
-          connections: safeConnections,
-          createdAt: Date.now(),
-          updatedAt: planBaseVersion || Date.now(),
-        },
-        operations: selectedOps,
-      };
-      const r = await fetch(`${backendUrl}/api/mindmaps/apply`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      if (r.status === 409) { alert('La mappa è cambiata. Rigenera il piano.'); return; }
-      const data = await r.json();
-      const newMap = data?.map;
-      if (newMap) {
-        setNodes(newMap.nodes || nodes);
-        setConnections(newMap.connections || connections);
-        setIsDirty(true);
-        setPlanOps([]); setPlanSelected({}); setPlanSummary(''); setPlanBaseVersion(0);
-      }
-    } catch (e) {
-      alert('Errore durante l\'applicazione delle modifiche');
-    }
-  }, [planOps, planSelected, planBaseVersion, currentMindMapId, nodes, connections]);
-
-  // When a plan is ready, ask the user if they want to apply it
-  useEffect(() => {
-    if (planOps.length > 0 && !planPromptedRef.current) {
-      planPromptedRef.current = true;
-      setTimeout(async () => {
-        const count = planOps.filter((_, i) => planSelected[i] !== false).length || planOps.length;
-        const ok = window.confirm(`Piano generato con ${count} operazione/i. Vuoi applicarle ora?`);
-        if (ok) {
-          await applySelectedOps();
-        }
-      }, 0);
-    }
-    if (planOps.length === 0) {
-      planPromptedRef.current = false;
-    }
-  }, [planOps, planSelected, applySelectedOps]);
+  // Removed plan auto-apply side effect
 
   const sendAiMessage = useCallback(async (inputOverride?: string) => {
     const text = (inputOverride ?? aiInput).trim();
@@ -952,25 +813,6 @@ export default function MindMapPage() {
           }
         }
       }
-      // Try parse a JSON plan from the final assistant text
-      try {
-        const start = collected.indexOf('{');
-        const end = collected.lastIndexOf('}');
-        if (start >= 0 && end > start) {
-          const maybe = collected.slice(start, end + 1);
-          const data = JSON.parse(maybe);
-          if (Array.isArray(data?.operations)) {
-            setPlanSummary(String(data?.summary || 'Piano proposto'));
-            setPlanBaseVersion(Number(data?.baseVersion || Date.now()));
-            setPlanOps(data.operations as any);
-            const initSel: Record<number, boolean> = {};
-            (data.operations as any[]).forEach((_: any, i: number) => { initSel[i] = true; });
-            setPlanSelected(initSel);
-            // Surface a visible action even if plan was inferred from chat
-            setShowPlanBanner(true);
-          }
-        }
-      } catch {}
     } catch (e) {
       setAiMessages(prev => prev.map(m => m.isStreaming ? { ...m, content: 'Errore di rete', isStreaming: false } : m));
     } finally {
@@ -1446,19 +1288,8 @@ export default function MindMapPage() {
                   nodes: nodes.map(n => ({ id: n.id, title: n.title })),
                   connections: connections.map(c => ({ sourceId: c.sourceId, targetId: c.targetId })),
                 } as any;
-                fetch(`${backendUrl}/api/suggest_node_titles`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ context: ctx, hint: node.title })
-                })
-                  .then(r => r.json())
-                  .then((data) => {
-                    const options: string[] = Array.isArray(data?.suggestions) ? data.suggestions : [];
-                    if (!options || options.length === 0) return;
-                    setTitleSuggestions({ nodeId: id, options });
-                  })
-                  .catch(() => {})
-                  .finally(() => setExpandingNodeId(null));
+                /* AI title suggestions removed */
+                setTimeout(() => setExpandingNodeId(null), 0);
               }}
               style={activeTool === 'eraser' ? { cursor: 'url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTIwIDIwSDdsLTctNyA5LjUtOS41YTMuNTQgMy41NCAwIDAgMSA1IDBsNCA0YTMuNTQgMy41NCAwIDAgMSAwIDVMMTMgMTguNSIgc3Ryb2tlPSIjZWY0NDQ0IiBzdHJva2Utd2lkdGg9IjIiIGZpbGw9IiNmZWY5ZjkiLz4KPHN2Zz4K") 12 12, auto' } : undefined}
             />
@@ -1496,30 +1327,7 @@ export default function MindMapPage() {
 
       {/* Save/Undo controls */}
       <div className="absolute top-4 right-4 z-20 pointer-events-auto flex gap-2">
-        {/* Title suggestions chooser */}
-        {titleSuggestions && (
-          <div className="bg-white/90 backdrop-blur rounded-lg shadow-lg border border-gray-200 px-3 py-2">
-            <div className="text-xs text-gray-500 mb-1">Sostituisci titolo nodo</div>
-            <div className="flex items-center gap-2">
-              {titleSuggestions.options.slice(0,3).map((s, idx) => (
-                <button
-                  key={idx}
-                  className="px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded text-xs border border-blue-200"
-                  onClick={() => {
-                    const nodeId = titleSuggestions.nodeId;
-                    setNodes(prev => prev.map(n => n.id === nodeId ? { ...n, title: s } : n));
-                    setIsDirty(true);
-                    setTitleSuggestions(null);
-                  }}
-                >{s}</button>
-              ))}
-              <button
-                className="px-2 py-1 bg-gray-50 hover:bg-gray-100 text-gray-700 rounded text-xs border border-gray-200"
-                onClick={() => setTitleSuggestions(null)}
-              >Chiudi</button>
-            </div>
-          </div>
-        )}
+        {/* Title suggestions rimossi */}
         {/* Deprecated node __suggestions panel removed */}
         <button
           onClick={() => {
@@ -1719,32 +1527,13 @@ export default function MindMapPage() {
             {selectedNodeId ? `Nodo selezionato` : `Nessun nodo`}
           </div>
         </div>
-        <div className="p-3 flex items-center gap-2 border-b border-gray-200">
-          <button
-            onClick={suggestTitles}
-            className="px-2 py-1.5 bg-white border border-gray-300 rounded text-xs hover:bg-gray-50"
-            title="Suggerisci nuovi titoli per il nodo selezionato"
-          >Titoli</button>
-          <button
-            onClick={() => requestPlan()}
-            className="px-2 py-1.5 bg-white border border-gray-300 rounded text-xs hover:bg-gray-50"
-            title="Genera piano AI di modifiche (con conferma)"
-          >Piano AI</button>
-        </div>
+        <div className="p-3 border-b border-gray-200" />
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
-          {showPlanBanner && planOps.length > 0 && (
-            <div className="bg-blue-50 border border-blue-200 text-blue-800 rounded-lg p-3 flex items-center justify-between sticky top-0 z-10">
-              <div className="text-xs">Piano generato: {planOps.length} operazione/i.</div>
-              <div className="flex items-center gap-2">
-                <button onClick={applySelectedOps} className="px-2 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700">Applica tutte</button>
-                <button onClick={() => setShowPlanBanner(false)} className="px-2 py-1 bg-white border border-blue-300 rounded text-xs hover:bg-blue-50">Chiudi</button>
-              </div>
-            </div>
-          )}
+          {/* Banner piano rimosso */}
           {aiMessages.length === 0 && (
-            <div className="text-xs text-gray-500">Suggerisci titoli, chiedi consigli o azioni sulla mappa. Il contesto include i nodi e quello selezionato.</div>
+            <div className="text-xs text-gray-500">Fai domande sulla mappa. Il contesto include i nodi e quello selezionato.</div>
           )}
-          {planOps.length > 0 && (
+          {/* plan removed: {planOps.length > 0 && (
             <div className="bg-white border border-gray-200 rounded-lg p-3 space-y-2">
               <div className="text-sm font-medium text-gray-700">Piano proposto</div>
               {planSummary && <div className="text-xs text-gray-600">{planSummary}</div>}
@@ -1768,7 +1557,7 @@ export default function MindMapPage() {
                 <button onClick={() => { setPlanOps([]); setPlanSelected({}); setPlanSummary(''); setPlanBaseVersion(0); }} className="px-3 py-1.5 bg-gray-100 text-gray-700 rounded text-xs border border-gray-300 hover:bg-gray-200">Scarta piano</button>
               </div>
             </div>
-          )}
+          )} */}
           {aiMessages.map(m => (
             <div key={m.id} className={m.role === 'user' ? 'ml-auto max-w-[90%] bg-[#eff6ff] rounded-lg p-3 text-sm' : 'max-w-[90%] p-3 text-sm'}>
               <div className={m.role === 'user' ? 'text-gray-800' : 'text-gray-700'}>{m.content}</div>
@@ -1786,20 +1575,12 @@ export default function MindMapPage() {
               className="w-full resize-none bg-[#f3f4f6] focus:outline-none border-none pr-12 text-sm"
               rows={2}
             />
-            <label className="absolute left-2 bottom-2 flex items-center gap-1 text-[11px] text-gray-600 select-none">
-              <input type="checkbox" checked={aiPlanMode} onChange={(e) => setAiPlanMode(e.target.checked)} />
-              Pianifica modifiche
-            </label>
+            {/* Pianifica modifiche rimosso */}
             <button
               onClick={async () => {
                 const msg = aiInput.trim();
                 if (!msg || aiLoading) return;
-                if (aiPlanMode) {
-                  await requestPlan(msg);
-                  await sendAiMessage(msg);
-                } else {
-                  await sendAiMessage();
-                }
+                await sendAiMessage();
               }}
               disabled={!aiInput.trim() || aiLoading}
               className={`absolute bottom-2 right-2 w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 ${aiInput.trim() && !aiLoading ? 'bg-[#007AFF] hover:bg-[#0056CC] cursor-pointer' : 'bg-[#CCCCCC] cursor-not-allowed'}`}
