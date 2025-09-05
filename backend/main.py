@@ -6,6 +6,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import openai
 import json
+from typing import Optional
 
 app = FastAPI(title="Mindmaps API", version="1.0.0")
 
@@ -255,6 +256,142 @@ async def expand_node(req: ExpandNodeRequest):
     except Exception as e:
         print(f"Expand error: {e}")
         raise HTTPException(status_code=500, detail="Failed to expand node")
+
+# =============== MAP DIFF PROPOSAL (JSON Patch) ===============
+
+class ProposeMapDiffRequest(BaseModel):
+    """
+    Request for proposing map changes as a JSON Patch (RFC 6902).
+
+    - user_request: Natural language request from the user (in Italian is fine).
+    - current_map: The current map state JSON object. Expected shape with at least:
+        { nodes: [{ id, title, x?, y?, ... }], connections: [{ id?, sourceId, targetId, ... }] }
+      Extra fields are preserved; patch should only touch nodes/connections unless explicitly requested.
+    - selection: Optional hint about current selection (e.g., selected node id) for better grounding.
+    - format: Currently only 'json-patch' is supported.
+    """
+    user_request: str
+    current_map: Dict[str, Any]
+    selection: Optional[Dict[str, Any]] = None
+    format: str = "json-patch"
+
+
+class ProposeMapDiffResponse(BaseModel):
+    """
+    Response with the proposed JSON Patch array and a short summary.
+    """
+    patch: List[Dict[str, Any]]
+    summary: Optional[str] = None
+
+
+def _build_map_diff_system_prompt() -> str:
+    """Rules for generating a JSON Patch diff for the mind map state."""
+    return (
+        "Sei un assistente che propone MODIFICHE alla mappa in forma di JSON Patch (RFC 6902). "
+        "Dato lo stato corrente della mappa (JSON) e la richiesta dell'utente, rispondi SOLO con un oggetto JSON "
+        "contenente le chiavi: patch (array di operazioni) e summary (stringa breve). "
+        "Regole importanti: "
+        "1) Usa esclusivamente operazioni RFC 6902: add, remove, replace, move, copy, test. "
+        "2) Opera rispetto alla radice del JSON fornito: ad es. '/nodes', '/connections'. "
+        "3) NON modificare campi o sezioni non richiesti; mantieni i dati esistenti. "
+        "4) Per rinominare un nodo: replace su '/nodes/<idx>/title'. "
+        "5) Per creare un nuovo nodo: add su '/nodes/-' con oggetto minimo {id, title}. "
+        "   Se posizione (x,y) non è specificata o sconosciuta, ometti x,y. "
+        "   L'id deve essere unico e temporaneo con prefisso 'tmp-'. "
+        "6) Per collegare nodi esistenti: add su '/connections/-' con {id?, sourceId, targetId}. "
+        "   Usa un id temporaneo opzionale con prefisso 'tmp-conn-'. "
+        "7) Non inventare id di nodi inesistenti: usa gli id presenti o crea nuovi con 'tmp-'. "
+        "8) Se la richiesta è ambigua, preferisci modifiche minime e sicure. "
+        "9) Output valido: un JSON con due chiavi: 'patch': [...], 'summary': '...'. Nessun testo extra."
+    )
+
+
+@app.post("/api/propose_map_diff", response_model=ProposeMapDiffResponse)
+async def propose_map_diff(req: ProposeMapDiffRequest):
+    """
+    Propose a set of changes to the provided map as a JSON Patch (RFC 6902),
+    based on the user's natural language request. Returns the patch and a short summary.
+
+    This endpoint does NOT apply the patch; the caller can review/approve and apply client-side.
+    """
+    if not client:
+        raise HTTPException(status_code=500, detail="API key not configured")
+
+    if req.format != "json-patch":
+        raise HTTPException(status_code=400, detail="Unsupported diff format; use 'json-patch'")
+
+    # Build context payload to keep within token limits
+    try:
+        current_map_str = json.dumps(req.current_map)[:6000]
+    except Exception:
+        current_map_str = "{}"
+
+    selection_str = ""
+    if req.selection:
+        try:
+            selection_str = json.dumps(req.selection)[:1000]
+        except Exception:
+            selection_str = ""
+
+    system_prompt = _build_map_diff_system_prompt()
+
+    user_prompt = (
+        "Richiesta utente (italiano):\n" + req.user_request.strip() + "\n\n" +
+        "Stato corrente mappa (JSON):\n" + current_map_str + "\n\n" +
+        ("Selezione corrente (facoltativa) in JSON:\n" + selection_str + "\n\n" if selection_str else "") +
+        "Produci SOLO un JSON con le chiavi 'patch' e 'summary'."
+    )
+
+    try:
+        completion = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+            max_tokens=1200,
+            stream=False,
+        )
+
+        content = (completion.choices[0].message.content or "").strip()
+
+        # Try to parse as an object with keys patch + summary
+        patch: List[Dict[str, Any]] = []
+        summary: Optional[str] = None
+        try:
+            obj = json.loads(content)
+            if isinstance(obj, dict):
+                candidate_patch = obj.get("patch")
+                if isinstance(candidate_patch, list):
+                    # Basic validation of operations
+                    normalized_patch: List[Dict[str, Any]] = []
+                    for op in candidate_patch:
+                        if isinstance(op, dict) and isinstance(op.get("op"), str) and isinstance(op.get("path"), str):
+                            normalized_patch.append(op)
+                    patch = normalized_patch
+                if isinstance(obj.get("summary"), str):
+                    summary = obj["summary"].strip()
+        except Exception:
+            # Try to extract a JSON object substring if the model wrapped it in text
+            try:
+                start = content.index("{")
+                end = content.rindex("}") + 1
+                obj = json.loads(content[start:end])
+                candidate_patch = obj.get("patch", []) if isinstance(obj, dict) else []
+                if isinstance(candidate_patch, list):
+                    patch = [op for op in candidate_patch if isinstance(op, dict) and "op" in op and "path" in op]
+                if isinstance(obj, dict) and isinstance(obj.get("summary"), str):
+                    summary = obj["summary"].strip()
+            except Exception:
+                patch = []
+                summary = None
+
+        # Ensure we always return a list (possibly empty) for patch
+        return ProposeMapDiffResponse(patch=patch, summary=summary)
+    except Exception as e:
+        print(f"Propose map diff error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to propose map diff")
 
 if __name__ == "__main__":
     import uvicorn

@@ -12,6 +12,7 @@ import {
   getFixedGridSize,
   type ScreenDimensions
 } from '../../utils/scaling-utils';
+import { applyJsonPatch, type JsonPatchOp } from '../../utils/jsonPatch';
 import { calculateNodeSize, getDefaultNodeSize } from '../../utils/nodeSize';
 import { auth } from '../../utils/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
@@ -750,6 +751,11 @@ export default function MindMapPage() {
   const [aiInput, setAiInput] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
   const aiAbortRef = useRef<AbortController | null>(null);
+  // AI Diff proposal state
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffPatch, setDiffPatch] = useState<JsonPatchOp[] | null>(null);
+  const [diffSummary, setDiffSummary] = useState<string | null>(null);
+  const [showDiffPanel, setShowDiffPanel] = useState(false);
 
   // Chat AI semplificata
 
@@ -840,6 +846,54 @@ export default function MindMapPage() {
       }
     } catch {}
   }, [selectedNodeId, nodes, connections]);
+
+  // Propose AI diff (JSON Patch)
+  const proposeAiDiff = useCallback(async () => {
+    const requestText = aiInput.trim() || window.prompt('Descrivi le modifiche desiderate (es. "Rinomina il nodo 2 in Marketing Digitale e collega 2 con 7")') || '';
+    if (!requestText) return;
+    if (diffLoading) return;
+    setDiffLoading(true);
+    setDiffPatch(null);
+    setDiffSummary(null);
+    try {
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const currentMap = {
+        nodes: nodes.map(n => ({ id: n.id, title: n.title, x: n.x, y: n.y, borderColor: n.borderColor })),
+        connections: connections.map(c => ({ id: c.id, sourceId: c.sourceId, targetId: c.targetId }))
+      };
+      const selection = selectedNodeId ? { selectedNodeId } : undefined;
+      const res = await fetch(`${backendUrl}/api/propose_map_diff`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_request: requestText, current_map: currentMap, selection, format: 'json-patch' })
+      });
+      if (!res.ok) throw new Error('Errore di rete');
+      const data = await res.json();
+      const patch: JsonPatchOp[] = Array.isArray(data?.patch) ? data.patch : [];
+      const summary: string | null = typeof data?.summary === 'string' ? data.summary : null;
+      setDiffPatch(patch);
+      setDiffSummary(summary);
+      setShowDiffPanel(true);
+    } catch (e: any) {
+      alert('Errore nella proposta modifiche: ' + (e?.message || 'sconosciuto'));
+    } finally {
+      setDiffLoading(false);
+    }
+  }, [aiInput, diffLoading, nodes, connections, selectedNodeId]);
+
+  const applyProposedDiff = useCallback(() => {
+    if (!diffPatch || diffPatch.length === 0) {
+      setShowDiffPanel(false);
+      return;
+    }
+    const newState = applyJsonPatch({ nodes, connections }, diffPatch);
+    setNodes(newState.nodes);
+    setConnections(newState.connections);
+    setIsDirty(true);
+    setShowDiffPanel(false);
+    setDiffPatch(null);
+    setDiffSummary(null);
+  }, [diffPatch, nodes, connections]);
 
 
   // Style helpers for relation selector (colors + SVG icons)
@@ -1522,7 +1576,7 @@ export default function MindMapPage() {
             {selectedNodeId ? `Nodo selezionato` : `Nessun nodo`}
           </div>
         </div>
-        <div className="p-3 border-b border-gray-200" />
+        <div className="p-3 border-b border-gray-200 text-xs text-gray-600">Proponi modifiche con diff JSON, poi approva.</div>
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
           {aiMessages.length === 0 && (
             <div className="text-xs text-gray-500">Fai domande sulla mappa. Il contesto include i nodi e quello selezionato.</div>
@@ -1563,9 +1617,49 @@ export default function MindMapPage() {
               )}
             </button>
           </div>
-          <div className="text-center text-gray-500 mt-2" style={{fontSize: '11px', lineHeight: '14px'}}>AI-generated, for reference only</div>
+          <div className="flex items-center gap-2 mt-2">
+            <button
+              onClick={proposeAiDiff}
+              disabled={diffLoading}
+              className={`px-3 py-2 rounded text-white text-xs ${diffLoading ? 'bg-gray-400' : 'bg-emerald-600 hover:bg-emerald-700'}`}
+            >
+              {diffLoading ? 'Calcolo diff…' : 'Proponi Modifiche (Diff)'}
+            </button>
+            <div className="text-gray-500 ml-auto" style={{fontSize: '11px', lineHeight: '14px'}}>AI-generated, review before apply</div>
+          </div>
         </div>
       </aside>
+
+      {/* Diff Panel Modal */}
+      {showDiffPanel && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/30" onClick={() => setShowDiffPanel(false)} />
+          <div className="relative z-10 w-[560px] max-w-[95vw] bg-white rounded-xl shadow-2xl border border-gray-200">
+            <div className="p-4 border-b border-gray-200 flex items-center">
+              <div className="font-semibold text-gray-800 text-sm">Proposta modifiche (JSON Patch)</div>
+              <button className="ml-auto text-gray-500 hover:text-gray-700" onClick={() => setShowDiffPanel(false)}>✕</button>
+            </div>
+            <div className="p-4 max-h-[60vh] overflow-y-auto text-sm">
+              {diffSummary && (
+                <div className="mb-3 p-2 bg-emerald-50 text-emerald-800 rounded border border-emerald-200">{diffSummary}</div>
+              )}
+              {(!diffPatch || diffPatch.length === 0) ? (
+                <div className="text-gray-500">Nessuna modifica proposta.</div>
+              ) : (
+                <div className="space-y-2">
+                  {diffPatch.map((op, i) => (
+                    <div key={i} className="font-mono text-xs p-2 bg-gray-50 border border-gray-200 rounded">{JSON.stringify(op)}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="p-4 border-t border-gray-200 flex items-center gap-2">
+              <button onClick={() => setShowDiffPanel(false)} className="px-3 py-2 rounded border text-sm">Annulla</button>
+              <button onClick={applyProposedDiff} className="ml-auto px-3 py-2 rounded bg-blue-600 hover:bg-blue-700 text-white text-sm">Approva e Applica</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
